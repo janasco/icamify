@@ -123,12 +123,18 @@ export class RecordingManager {
    * Opens a recording window. Called by the motion/AI layers; the metadata is
    * attached to the event row created for this episode.
    */
-  trigger(cameraId: string, kind: TriggerKind = 'motion', at = this.now(), meta?: TriggerMeta): void {
+  trigger(
+    cameraId: string,
+    kind: TriggerKind = 'motion',
+    at = this.now(),
+    meta?: TriggerMeta,
+    options: { holdSeconds?: number } = {},
+  ): void {
     const recorder = this.recorders.get(cameraId);
     if (recorder === undefined) return;
     this.pendingMeta = meta;
     try {
-      recorder.trigger(kind, at);
+      recorder.trigger(kind, at, options.holdSeconds === undefined ? {} : { holdMs: options.holdSeconds * 1000 });
     } finally {
       this.pendingMeta = undefined;
     }

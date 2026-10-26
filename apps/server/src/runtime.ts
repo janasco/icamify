@@ -2,6 +2,7 @@ import type { CameraConfig, ResolvedIcamifyConfig, StreamSource } from '@icamify
 import { MediaError, MediaEngine, maskUrl, redactArgv } from '@icamify/media';
 import { HttpError } from './http/responses.ts';
 import type { LiveRegistry, LiveSessionStats, TransportAvailability } from '@icamify/stream';
+import type { AiStatusView } from './ai/service.ts';
 import type { MotionStatusView } from './motion/service.ts';
 import type { RecordingManager } from './recording/manager.ts';
 
@@ -58,7 +59,19 @@ export interface CameraView {
     lastMotionAt?: number;
     lastError?: string;
   };
-  ai: { enabled: boolean; providerId?: string; labels: string[] };
+  ai: {
+    enabled: boolean;
+    providerId?: string;
+    providerName?: string;
+    task?: string;
+    labels: string[];
+    minConfidence?: number;
+    lastLabels?: string[];
+    lastDetectionAt?: number;
+    lastLatencyMs?: number;
+    lastError?: string;
+    circuit?: 'closed' | 'open' | 'unknown';
+  };
   ptz: { supported: boolean };
   hasSubStream: boolean;
   source: CameraSourceView;
@@ -83,6 +96,7 @@ export interface CameraRuntimeOptions {
   toolchain?: { ffmpegVersion: string };
   recording?: RecordingManager;
   motionStatus?: (cameraId: string) => MotionStatusView | undefined;
+  aiStatus?: (cameraId: string) => AiStatusView | undefined;
   log?: (line: string) => void;
 }
 
@@ -125,6 +139,7 @@ export class CameraRuntime {
             ...(recorder.lastError === undefined ? {} : { lastError: recorder.lastError }),
           };
     const motion = this.options.motionStatus?.(camera.id);
+    const ai = this.options.aiStatus?.(camera.id);
     const lastError = this.errors.get(camera.id) ?? sessions.find((session) => session.lastError !== undefined)?.lastError;
     const state: CameraStatusView['state'] =
       sessions.some((session) => session.state === 'restarting')
@@ -168,6 +183,19 @@ export class CameraRuntime {
         enabled: camera.ai?.enabled === true,
         ...(camera.ai?.providerId === undefined ? {} : { providerId: camera.ai.providerId }),
         labels: camera.ai?.labels ?? [],
+        ...(ai === undefined
+          ? {}
+          : {
+              ...(ai.providerId === undefined ? {} : { providerId: ai.providerId }),
+              ...(ai.providerName === undefined ? {} : { providerName: ai.providerName }),
+              task: ai.task,
+              minConfidence: ai.minConfidence,
+              lastLabels: ai.lastLabels,
+              circuit: ai.circuit,
+              ...(ai.lastDetectionAt === undefined ? {} : { lastDetectionAt: ai.lastDetectionAt }),
+              ...(ai.lastLatencyMs === undefined ? {} : { lastLatencyMs: ai.lastLatencyMs }),
+              ...(ai.lastError === undefined ? {} : { lastError: ai.lastError }),
+            }),
       },
       ptz: { supported: camera.ptz?.enabled === true || camera.ptz !== undefined },
       hasSubStream: camera.streams.sub !== undefined,

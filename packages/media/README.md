@@ -49,7 +49,13 @@ A trigger opens a window from `now − preBufferSeconds` to
 `lastTrigger + postRollSeconds`; overlapping buffered segments are adopted
 immediately, so the clip contains the seconds before the event. Repeat triggers
 (the motion service's once-per-second heartbeat) extend the window without opening
-new events.
+new events. `trigger(kind, at, {holdMs})` lets a rule ask for a longer clip, and an
+`alert` trigger during an open motion episode *escalates* it: the window is extended
+and every later segment is filed as `reason: alert`.
+
+`captureSnapshot()` accepts a normalized `crop` rectangle (`crop=in_w*…:in_h*…`), so
+the AI layer can send a detector only the motion region without probing the source
+first.
 
 `mode: 'off'` starts nothing, and `@icamify/media` never imports the index: the
 recorder emits `RecordedSegmentInfo` and the server persists it.

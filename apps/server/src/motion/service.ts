@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { CameraConfig, MotionSettings, ResolvedIcamifyConfig, ZoneGrid } from '@icamify/core';
@@ -107,7 +108,17 @@ export interface MotionServiceOptions {
    * recording window, so a person standing in frame keeps recording instead of
    * stopping when the first post-roll expires.
    */
-  onMotionStart?: (cameraId: string, at: number, detail: { peakPercent: number; boxes: NormalizedBox[] }) => void;
+  onMotionStart?: (
+    cameraId: string,
+    at: number,
+    detail: { peakPercent: number; boxes: NormalizedBox[]; episodeId?: string },
+  ) => void;
+  /** Fires once, when the debounced episode ends, with its real duration. */
+  onMotionEnd?: (
+    cameraId: string,
+    at: number,
+    detail: { episodeId: string; startedAt: number; durationSeconds: number; peakPercent: number; boxes: NormalizedBox[] },
+  ) => void;
   /** Defaults to `<stateDir>/motion-overrides.json`. */
   overridesPath?: string;
   /** Set to false to build the service without starting pipelines (tests). */
@@ -120,6 +131,7 @@ export interface MotionPatch {
 }
 
 interface Episode {
+  id: string;
   startedAt: number;
   peakPercent: number;
   boxes: NormalizedBox[];
@@ -378,11 +390,18 @@ export class MotionService {
       worker.boxes = boxes;
       worker.peakPercent = Math.max(worker.peakPercent, detection.changedPercent);
       if (worker.episode === undefined) {
-        worker.episode = { startedAt: frame.timestamp, peakPercent: detection.changedPercent, boxes };
+        const episode: Episode = {
+          id: randomUUID(),
+          startedAt: frame.timestamp,
+          peakPercent: detection.changedPercent,
+          boxes,
+        };
+        worker.episode = episode;
         worker.motion = true;
         this.options.onMotionStart?.(worker.camera.id, frame.timestamp, {
           peakPercent: detection.changedPercent,
           boxes,
+          episodeId: episode.id,
         });
         this.emit({
           type: 'motion:start',
@@ -403,6 +422,7 @@ export class MotionService {
           this.options.onMotionStart?.(worker.camera.id, frame.timestamp, {
             peakPercent: episode.peakPercent,
             boxes,
+            episodeId: episode.id,
           });
           this.emit({
             type: 'motion' as const,
@@ -425,6 +445,13 @@ export class MotionService {
         cameraId: worker.camera.id,
         at: frame.timestamp,
         percent: detection.changedPercent,
+        peakPercent: episode.peakPercent,
+        boxes: episode.boxes,
+      });
+      this.options.onMotionEnd?.(worker.camera.id, frame.timestamp, {
+        episodeId: episode.id,
+        startedAt: episode.startedAt,
+        durationSeconds: Math.max(0, (frame.timestamp - episode.startedAt) / 1000),
         peakPercent: episode.peakPercent,
         boxes: episode.boxes,
       });

@@ -10,7 +10,7 @@ import type { ArchiveProvider, StorageVolume } from '@icamify/core';
 
 export type SegmentReason = 'continuous' | 'motion' | 'alert' | 'scheduled' | 'manual';
 
-export type RecordingEventKind = 'motion' | 'ai.object' | 'ai.face' | 'ai.lpr' | 'rule' | 'manual';
+export type RecordingEventKind = 'motion' | 'ai.object' | 'ai.face' | 'ai.lpr' | 'ai.scene' | 'rule' | 'manual';
 
 export interface RecordingSegment {
   id: string;
@@ -39,10 +39,16 @@ export interface RecordedEvent {
   endedAt?: number;
   /** Peak share of zone cells that changed, for motion events. */
   peakPercent?: number;
-  /** Human label, e.g. "person" once the AI gateway lands. */
+  /** Human label, e.g. "person". */
   label?: string;
   /** Detection boxes as reported by the detector (opaque here). */
   boxes?: unknown;
+  /** Highest confidence among the detections this event came from (0..1). */
+  confidence?: number;
+  /** AI provider that produced the detection, when there was one. */
+  providerId?: string;
+  /** Saved JPEG of the frame, relative to the snapshots directory. */
+  snapshot?: string;
 }
 
 export interface VolumeStats {

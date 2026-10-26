@@ -523,22 +523,60 @@ export function buildDetectArgs(options: DetectBuildOptions): BuildResult {
 // Snapshots and probing
 // ---------------------------------------------------------------------------
 
+export interface SnapshotCrop {
+  /** Normalized 0..1 rectangle of the frame to keep. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface SnapshotBuildOptions extends CommonBuildOptions {
   source: StreamSource;
   maxWidth?: number;
   quality?: number;
+  /** Crop before scaling, used to send a detector only the motion region. */
+  crop?: SnapshotCrop;
 }
 
 /** Single JPEG on stdout, taken from the recording (high-resolution) stream. */
 export function buildSnapshotArgs(options: SnapshotBuildOptions): BuildResult {
   const input = buildInputArgs(options.source, options);
   const args = withGlobal(options, [], input.args);
+  const warnings = [...input.warnings];
   const filters: string[] = [];
+  if (options.crop !== undefined) {
+    const crop = clampCrop(options.crop);
+    if (crop === undefined) {
+      warnings.push('snapshot crop is empty or outside the frame; using the full frame');
+    } else {
+      // Expression form keeps the crop exact for any source resolution: FFmpeg
+      // evaluates in_w/in_h after decoding, so no probe is needed first.
+      filters.push(
+        `crop=in_w*${crop.width}:in_h*${crop.height}:in_w*${crop.x}:in_h*${crop.y}`,
+      );
+    }
+  }
   if (options.maxWidth !== undefined) filters.push(`scale=${options.maxWidth}:-2`);
   args.push('-frames:v', '1', '-an', '-sn');
   if (filters.length > 0) args.push('-vf', filters.join(','));
   args.push('-q:v', String(options.quality ?? 3), '-f', 'mjpeg', 'pipe:1');
-  return { args, warnings: input.warnings };
+  return { args, warnings };
+}
+
+function clampCrop(crop: SnapshotCrop): SnapshotCrop | undefined {
+  const values = [crop.x, crop.y, crop.width, crop.height];
+  if (values.some((value) => !Number.isFinite(value))) return undefined;
+  const x = Math.max(0, Math.min(1, crop.x));
+  const y = Math.max(0, Math.min(1, crop.y));
+  const width = Math.min(1 - x, crop.width);
+  const height = Math.min(1 - y, crop.height);
+  if (width <= 0.001 || height <= 0.001) return undefined;
+  return { x: round5(x), y: round5(y), width: round5(width), height: round5(height) };
+}
+
+function round5(value: number): number {
+  return Math.round(value * 100000) / 100000;
 }
 
 /** ffprobe argv (different binary, same source mapping). */

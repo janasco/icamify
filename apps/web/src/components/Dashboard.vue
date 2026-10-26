@@ -1,16 +1,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import AiEditor from './AiEditor.vue';
 import CameraTile from './CameraTile.vue';
 import ClipsPanel from './ClipsPanel.vue';
 import MotionEditor from './MotionEditor.vue';
 import { api, errorMessage } from '../api';
 import type {
+  AiRuntime,
+  AiStatus,
+  AlertRuntime,
   AuthMe,
   CameraList,
   CameraView,
+  EventList,
   LayoutList,
   MotionRuntime,
   MotionStatus,
+  RecordedEvent,
   RecordingList,
   RecordingSegment,
   SystemInfo,
@@ -38,6 +44,14 @@ const clipsLoading = ref(false);
 const clipsError = ref<string | null>(null);
 const newClips = ref(0);
 const editing = ref<CameraView | null>(null);
+const editingAi = ref<CameraView | null>(null);
+const aiRuntime = ref<Record<string, AiRuntime>>({});
+const alerts = ref<AlertRuntime[]>([]);
+const clipsTab = ref<'clips' | 'events'>('clips');
+const events = ref<RecordedEvent[]>([]);
+const eventsLoading = ref(false);
+const eventsError = ref<string | null>(null);
+const newAlerts = ref(0);
 
 const canConfigure = computed(() => props.me.user?.role !== 'viewer');
 
@@ -45,6 +59,8 @@ let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let pollTimer: number | null = null;
 let disposed = false;
+/** Detections are transient: drop the boxes a few seconds after the last frame. */
+const aiTimers = new Map<string, number>();
 
 const defaultLayout = computed(() => {
   const list = layouts.value?.layouts ?? [];
@@ -171,6 +187,40 @@ function connectControl(): void {
       clips.value = [segment, ...clips.value].slice(0, 100);
       clipsTotal.value += 1;
       newClips.value += 1;
+      return;
+    }
+    if (message.type === 'ai' && typeof message.cameraId === 'string') {
+      const detections = Array.isArray(message.detections) ? (message.detections as AiRuntime['detections']) : [];
+      aiRuntime.value = {
+        ...aiRuntime.value,
+        [message.cameraId]: {
+          cameraId: message.cameraId,
+          at: typeof message.at === 'number' ? message.at : Date.now(),
+          task: typeof message.task === 'string' ? message.task : 'object',
+          providerId: typeof message.providerId === 'string' ? message.providerId : '',
+          detections,
+          ...(typeof message.latencyMs === 'number' ? { latencyMs: message.latencyMs } : {}),
+        },
+      };
+      scheduleAiClear(message.cameraId);
+      return;
+    }
+    if (message.type === 'alert' && typeof message.ruleId === 'string') {
+      const alert: AlertRuntime = {
+        ruleId: message.ruleId,
+        ruleName: typeof message.ruleName === 'string' ? message.ruleName : message.ruleId,
+        cameraId: typeof message.cameraId === 'string' ? message.cameraId : '',
+        at: typeof message.at === 'number' ? message.at : Date.now(),
+        kind: typeof message.kind === 'string' ? message.kind : 'motion',
+        actions: Array.isArray(message.actions) ? (message.actions as AlertRuntime['actions']) : [],
+        ...(typeof message.label === 'string' ? { label: message.label } : {}),
+        ...(typeof message.confidence === 'number' ? { confidence: message.confidence } : {}),
+        ...(typeof message.snapshot === 'string' ? { snapshot: message.snapshot } : {}),
+        ...(typeof message.eventId === 'string' ? { eventId: message.eventId } : {}),
+      };
+      alerts.value = [alert, ...alerts.value].slice(0, 50);
+      newAlerts.value += 1;
+      return;
     }
   };
   next.onclose = () => {
@@ -182,6 +232,20 @@ function connectControl(): void {
   next.onerror = () => {
     // `close` follows and owns the retry.
   };
+}
+
+function scheduleAiClear(cameraId: string): void {
+  const existing = aiTimers.get(cameraId);
+  if (existing !== undefined) window.clearTimeout(existing);
+  aiTimers.set(
+    cameraId,
+    window.setTimeout(() => {
+      aiTimers.delete(cameraId);
+      const next = { ...aiRuntime.value };
+      delete next[cameraId];
+      aiRuntime.value = next;
+    }, 6000),
+  );
 }
 
 function scheduleReconnect(): void {
@@ -251,7 +315,36 @@ function setFocus(cameraId: string | null): void {
 
 function toggleClips(): void {
   clipsOpen.value = !clipsOpen.value;
-  if (clipsOpen.value) void loadClips();
+  if (!clipsOpen.value) return;
+  if (clipsTab.value === 'clips') void loadClips();
+  else void loadEvents();
+}
+
+function setTab(tab: 'clips' | 'events'): void {
+  clipsTab.value = tab;
+  if (tab === 'clips') {
+    newClips.value = 0;
+    void loadClips();
+  } else {
+    newAlerts.value = 0;
+    void loadEvents();
+  }
+}
+
+async function loadEvents(): Promise<void> {
+  eventsLoading.value = true;
+  eventsError.value = null;
+  try {
+    const query = new URLSearchParams({ limit: '80', order: 'desc' });
+    if (focusId.value !== null) query.set('cameraId', focusId.value);
+    const list = await api<EventList>(`/api/events?${query.toString()}`);
+    events.value = list.events;
+    newAlerts.value = 0;
+  } catch (error) {
+    eventsError.value = errorMessage(error);
+  } finally {
+    eventsLoading.value = false;
+  }
 }
 
 async function loadClips(): Promise<void> {
@@ -278,8 +371,28 @@ function onMotionSaved(status: MotionStatus): void {
   }
 }
 
+function onAiSaved(status: AiStatus): void {
+  const camera = cameras.value.find((candidate) => candidate.id === status.cameraId);
+  if (camera === undefined) return;
+  applyCamera({
+    ...camera,
+    ai: {
+      ...camera.ai,
+      enabled: status.enabled,
+      ...(status.providerId === undefined ? {} : { providerId: status.providerId }),
+      ...(status.providerName === undefined ? {} : { providerName: status.providerName }),
+      task: status.task,
+      labels: status.labels,
+      minConfidence: status.minConfidence,
+      ...(status.lastError === undefined ? {} : { lastError: status.lastError }),
+    },
+  });
+}
+
 watch(focusId, () => {
-  if (clipsOpen.value) void loadClips();
+  if (!clipsOpen.value) return;
+  if (clipsTab.value === 'clips') void loadClips();
+  else void loadEvents();
 });
 
 function railDot(camera: CameraView): string {
@@ -307,6 +420,8 @@ onBeforeUnmount(() => {
   socket = null;
   if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
   if (pollTimer !== null) window.clearInterval(pollTimer);
+  for (const timer of aiTimers.values()) window.clearTimeout(timer);
+  aiTimers.clear();
 });
 
 function autoColumns(count: number): number {
@@ -412,6 +527,12 @@ function readString(key: string): string | null {
         <button :class="{ primary: clipsOpen }" @click="toggleClips">
           Clips<span v-if="newClips > 0 && !clipsOpen" class="new-clip-badge">+{{ newClips }}</span>
         </button>
+        <button
+          :class="{ primary: clipsOpen && clipsTab === 'events' }"
+          @click="clipsTab = 'events'; toggleClips()"
+        >
+          Events<span v-if="newAlerts > 0" class="new-clip-badge">+{{ newAlerts }}</span>
+        </button>
         <button @click="load" :disabled="loading">{{ loading ? 'Loading…' : 'Refresh' }}</button>
       </div>
 
@@ -443,8 +564,10 @@ function readString(key: string): string | null {
             <CameraTile
               :camera="camera"
               :motion="motionRuntime[camera.id] ?? null"
+              :ai="aiRuntime[camera.id] ?? null"
               :can-configure="canConfigure"
               @configure="editing = camera"
+              @ai-configure="editingAi = camera"
             />
           </div>
         </div>
@@ -453,7 +576,8 @@ function readString(key: string): string | null {
       <div class="footer-note">
         <span>Drag tiles to reorder · double-click a tile for fullscreen</span>
         <span v-if="system">WebRTC: {{ system.transports.webrtc.available ? 'available' : (system.transports.webrtc.reason ?? 'unavailable') }}</span>
-        <span v-if="clipsOpen" class="mono">{{ clipsTotal }} clips</span>
+        <span v-if="clipsOpen" class="mono">{{ clipsTotal }} clips · {{ events.length }} events</span>
+        <span v-if="alerts.length > 0" class="mono">last alert: {{ alerts[0]?.ruleName }}</span>
       </div>
     </section>
 
@@ -464,10 +588,17 @@ function readString(key: string): string | null {
       :loading="clipsLoading"
       :error="clipsError"
       :total="clipsTotal"
+      :tab="clipsTab"
+      :events="events"
+      :events-loading="eventsLoading"
+      :events-error="eventsError"
       @refresh="loadClips"
+      @refresh-events="loadEvents"
+      @tab="setTab"
       @close="clipsOpen = false"
     />
 
     <MotionEditor v-if="editing" :camera="editing" @close="editing = null" @saved="onMotionSaved" />
+    <AiEditor v-if="editingAi" :camera="editingAi" @close="editingAi = null" @saved="onAiSaved" />
   </div>
 </template>

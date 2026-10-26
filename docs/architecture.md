@@ -162,9 +162,15 @@ icamify/
 │   │   ├── src/index.ts             ✅ contracts + factory
 │   │   └── test/                    ✅ 18 tests (engine, frames, zones)
 │   │
-│   ├── ai/                          📐 AI gateway (Phase 4)
-│   │   ├── README.md                ✅ provider parity matrix, rules of engagement
-│   │   └── src/index.ts             📐 AiGateway, AiProviderClient, Detection, plugin contract
+│   ├── ai/                          ✅ AI gateway
+│   │   ├── README.md                ✅ provider parity matrix, behaviour, limits
+│   │   ├── src/gateway.ts           ✅ bounded queue, concurrency, deadline, circuit breaker
+│   │   ├── src/providers/           ✅ CodeProject.AI, DeepStack, generic HTTP, plugin worker
+│   │   ├── src/mapping.ts           ✅ paths, confidence, box math, crop remap
+│   │   ├── src/rules.ts             ✅ rule predicates + templates (pure)
+│   │   ├── src/plugin-worker.ts     ✅ worker bootstrap for hot-loaded providers
+│   │   ├── src/index.ts             ✅ contracts + exports
+│   │   └── test/                    ✅ 50 tests (mapping, providers, gateway, rules, plugin)
 │   │
 │   ├── onvif/                       📐 discovery + PTZ (Phase 4)
 │   │   ├── README.md                ✅ scope + security behaviour
@@ -206,9 +212,9 @@ seams between phases, so each can be implemented and tested in isolation.
 | `@icamify/core` | `loadConfig`, `IcamifyConfig`, `ZoneGrid`, `redactConfig` | `icamify.json`, env | typed, validated config |
 | `@icamify/media` | `MediaPipeline`, `CameraRecorder`, `SegmentWindow`, `StreamProbe` | `StreamSource`, `StreamProfile` | FFmpeg processes, adopted segments, live frames |
 | `@icamify/motion` | `MotionEngine.analyze(Frame)`, `RawFrameReader`, `compileZones` | detect frames, `MotionSettings`, `ZoneGrid` | `MotionDetection` (boxes, percent, cells) |
-| `@icamify/ai` | `AiGateway.detect(providerId, request)` | JPEG crops, provider config | `Detection[]` |
+| `@icamify/ai` | `Gateway.detect(providerId, request)`, `matchingRules`, `unionBox` | JPEG crops, provider config | `Detection[]`, rule matches |
 | `@icamify/onvif` | `OnvifScanner`, `PtzClient` | network, credentials | devices, presets, move commands |
-| `@icamify/storage` | `RecordingIndex`, `RetentionManager` | finalized files, quotas | clip/event rows, tombstones (deletion in Phase 5) |
+| `@icamify/storage` | `RecordingIndex`, `RetentionManager` | finalized files, quotas | clip/detection/rule rows, tombstones (deletion in Phase 5) |
 | `@icamify/stream` | `LiveSession`, `LiveRegistry`, `LiveSource` | FFmpeg stdout, config limits | fMP4 init/fragments, MJPEG frames, viewer stats |
 | `@icamify/server` | HTTP + WS + WebRTC signaling | all of the above | browser console |
 
@@ -299,8 +305,30 @@ Consequences handled in code:
 
 Episode/event bookkeeping: `RecordingManager` writes the `events` row when a window
 opens (peak percent and boxes attached), links every adopted segment, and closes the
-row on release. The AI crop step (`AiGateway.detect()`) and the rules engine hang
-off the same events in Phase 4.
+row on release. When a rule fires during an open motion episode the recorder
+escalates the episode to `alert` and extends the window to `then.record.seconds`,
+so the clip that a person will look for is the one marked `alert`.
+
+### 5.3b Motion → AI → rules
+
+```
+motion:start ─┬─→ recording.trigger('motion')        (pre-roll + heartbeat window)
+              ├─→ AiService.analyze()                (interval + in-flight guards)
+              │     capture frame (sub-stream, cropped) → Gateway.detect()
+              │     filter labels/confidence → normalize+remap boxes
+              │     save snapshot → index ai.<task> event per label
+              │     → WS 'ai' → rules.handle({kind:'ai.object', label, confidence})
+              └─→ rules.handle({id, kind:'motion', phase:'start'})
+motion:end   ───→ rules.handle({id, kind:'motion', phase:'end', durationSeconds})
+
+rule match → index 'rule' event → recording.trigger('alert', holdSeconds)
+           → snapshot  → notifier.deliver(webhook, HMAC)  → WS 'alert'
+```
+
+Guarantees: the detector is never on the recording path; `intervalMs` and one
+in-flight analysis per camera bound the load; three provider failures open the
+circuit for 30 s; a rule fires at most once per episode (`rule|camera|episode`)
+and respects `when.cooldownSeconds`.
 
 ### 5.4 Retention
 
@@ -378,7 +406,8 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | **2 — Live console** | HTTP API + auth, control WebSocket, WebRTC signaling and session lifecycle, MSE/MJPEG live view, Vue grid console | ✅ complete (media plane for WebRTC pending) |
 | **2b — WebRTC media** | Register a WebRTC media engine (H.264 RTP ↔ ICE/DTLS), resizable tile spans in the grid editor, HLS segmenter | planned |
 | **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
-| **4 — AI, PTZ, alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, rules engine, notification channels (webhook/email/MQTT/Telegram), ONVIF discovery and PTZ presets/patrol | planned |
+| **4 — AI & alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, crop-to-motion, label/confidence gating, rules engine, alert clips, webhook delivery (HMAC), console detection overlay and event log | ✅ complete |
+| **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ presets/patrols, rule actions for PTZ and scripts, email/MQTT/Telegram delivery | not started |
 | **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), timeline player with motion/AI markers, storage dashboards | planned |
 
 ### Exit criteria per phase

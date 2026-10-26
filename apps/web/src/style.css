@@ -814,3 +814,100 @@ code,
     width: 300px;
   }
 }
+
+/* -- AI detections -------------------------------------------------------- */
+
+.tile .ai-boxes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.tile .ai-box {
+  position: absolute;
+  border: 1px solid var(--ok);
+  background: rgba(52, 211, 153, 0.1);
+  border-radius: 2px;
+  min-width: 4px;
+  min-height: 4px;
+}
+
+.tile .ai-box-label {
+  position: absolute;
+  left: -1px;
+  bottom: 100%;
+  padding: 1px 5px;
+  border-radius: 4px 4px 4px 0;
+  background: rgba(6, 20, 16, 0.86);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #d7fff0;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.detection-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.select {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: #0b1219;
+  color: inherit;
+  outline: none;
+}
+
+.select:focus {
+  border-color: var(--accent);
+}
+
+input[type='range'] {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+input[type='checkbox'] {
+  accent-color: var(--accent);
+  margin-right: 8px;
+}
+
+/* -- drawer tabs ---------------------------------------------------------- */
+
+.tab-row {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab-row button {
+  flex: 1;
+  padding: 5px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tab-row button.active {
+  background: var(--panel-3);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.event-row + .event-row {
+  border-top: 1px solid rgba(36, 50, 63, 0.5);
+}

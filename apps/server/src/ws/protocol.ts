@@ -47,6 +47,30 @@ export type ServerMessage =
     }
   | { type: 'recording:segment'; segment: RecordingSegment }
   | { type: 'recording:event'; event: RecordedEvent; closed: boolean }
+  | {
+      type: 'ai';
+      cameraId: string;
+      at: number;
+      task: string;
+      providerId: string;
+      latencyMs: number;
+      detections: Array<{ label: string; confidence: number; box?: NormalizedBox }>;
+      snapshot?: string;
+    }
+  | { type: 'ai:error'; cameraId: string; at: number; message: string }
+  | {
+      type: 'alert';
+      ruleId: string;
+      ruleName: string;
+      cameraId: string;
+      at: number;
+      kind: string;
+      label?: string;
+      confidence?: number;
+      actions: Array<{ action: string; ok: boolean; detail?: string }>;
+      snapshot?: string;
+      eventId?: string;
+    }
   | { type: 'error'; code: string; message: string }
   | { type: 'webrtc:answer'; sessionId: string; cameraId: string; sdp: string }
   | { type: 'webrtc:error'; code: string; message: string };

@@ -19,6 +19,7 @@ export type EventKind =
   | 'ai.object'
   | 'ai.face'
   | 'ai.lpr'
+  | 'ai.scene'
   | 'camera.online'
   | 'camera.offline'
   | 'storage.warning'

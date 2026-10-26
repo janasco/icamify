@@ -41,6 +41,7 @@ export async function captureSnapshot(source: StreamSource, options: SnapshotOpt
     source,
     maxWidth: options.maxWidth,
     quality: options.quality,
+    ...(options.crop === undefined ? {} : { crop: options.crop }),
     resolvedUri: options.resolvedUri,
   });
   const runner = options.runner ?? createSnapshotRunner();

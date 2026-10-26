@@ -236,6 +236,32 @@ describe('CameraRecorder', () => {
     await h.recorder.stop();
   });
 
+  it('escalates an open motion window to an alert when a rule fires', async () => {
+    const root = await tempRoot();
+    const h = harness(root, { mode: 'motion', preBufferSeconds: 2, postRollSeconds: 2 });
+    await h.recorder.start();
+    const t0 = h.clock.value;
+    await writeHot(h.hotDir, t0);
+    await writeHot(h.hotDir, t0 + SECOND);
+    h.recorder.trigger('motion', t0 + 1500);
+    await h.recorder.pollOnce();
+    assert.equal(h.adopted[0]!.reason, 'motion');
+
+    // The rule fires a second later: the episode is still open, but it is now an
+    // alert, and every segment adopted from here on must say so.
+    h.recorder.trigger('alert', t0 + 2500, { holdMs: 6000 });
+    await h.recorder.pollOnce();
+    await writeHot(h.hotDir, t0 + 3500);
+    await writeHot(h.hotDir, t0 + 4500);
+    h.clock.value = t0 + 4500;
+    await h.recorder.pollOnce();
+
+    assert.equal(h.triggers.length, 1, 'still one event for the whole episode');
+    assert.ok(h.adopted.some((segment) => segment.reason === 'alert'), 'later segments are alerts');
+    assert.equal(h.recorder.status().windowEndsAt, t0 + 8500, 'the rule clip length extends the window');
+    await h.recorder.stop();
+  });
+
   it('deletes buffered segments once they fall out of the pre-buffer', async () => {
     const root = await tempRoot();
     const h = harness(root, { mode: 'motion', preBufferSeconds: 5 });

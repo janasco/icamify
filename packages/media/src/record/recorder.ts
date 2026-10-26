@@ -247,13 +247,15 @@ export class CameraRecorder {
    * — including everything before "now" — are adopted immediately, which is what
    * puts pre-roll in the clip.
    */
-  trigger(kind: TriggerKind, at = this.now()): void {
+  trigger(kind: TriggerKind, at = this.now(), options: { holdMs?: number } = {}): void {
     if (this.mode === 'off' || this.mode === 'continuous') return;
     if (this.mode === 'scheduled' && kind !== 'scheduled') return;
     if (this.stopping) return;
 
     const windowStart = at - this.preBufferMs();
-    const windowEnd = at + this.postRollMs();
+    // `holdMs` lets a rule request a specific clip length (then.record.seconds)
+    // instead of relying on the camera's post-roll.
+    const windowEnd = at + Math.max(this.postRollMs(), options.holdMs ?? 0);
     this.windowStart = this.windowStart === undefined ? windowStart : Math.min(this.windowStart, windowStart);
     this.windowEnd = this.windowEnd === undefined ? windowEnd : Math.max(this.windowEnd, windowEnd);
 
@@ -267,6 +269,10 @@ export class CameraRecorder {
         windowStart: this.windowStart,
         windowEnd: this.windowEnd,
       });
+    } else if (kind === 'alert' && this.eventKind !== 'alert') {
+      // A rule firing during a motion episode escalates it: the clip is kept as
+      // an alert, because that is the reason someone will look for it later.
+      this.eventKind = 'alert';
     }
 
     const reason: RecordingReason = kind === 'alert' ? 'alert' : kind === 'scheduled' ? 'scheduled' : 'motion';

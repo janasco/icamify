@@ -71,6 +71,9 @@ export interface EventInput {
   peakPercent?: number;
   label?: string;
   boxes?: unknown;
+  confidence?: number;
+  providerId?: string;
+  snapshot?: string;
 }
 
 export interface EventPatch {
@@ -78,11 +81,15 @@ export interface EventPatch {
   peakPercent?: number;
   label?: string;
   boxes?: unknown;
+  snapshot?: string;
 }
 
 export interface EventQuery {
   cameraId?: string;
   kind?: RecordingEventKind;
+  /** Case-insensitive label filter ("person" matches "Person/Adult"). */
+  label?: string;
+  providerId?: string;
   from?: number;
   to?: number;
   limit?: number;
@@ -116,6 +123,9 @@ interface EventRow {
   peak_percent: number | null;
   label: string | null;
   boxes: string | null;
+  confidence: number | null;
+  provider_id: string | null;
+  snapshot: string | null;
 }
 
 export class RecordingIndex {
@@ -304,8 +314,8 @@ export class RecordingIndex {
     const id = input.id ?? randomUUID();
     this.db
       .prepare(
-        `INSERT INTO events (id, camera_id, kind, started_at, ended_at, peak_percent, label, boxes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO events (id, camera_id, kind, started_at, ended_at, peak_percent, label, boxes, confidence, provider_id, snapshot, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -316,6 +326,9 @@ export class RecordingIndex {
         input.peakPercent === undefined ? null : input.peakPercent,
         input.label ?? null,
         input.boxes === undefined ? null : JSON.stringify(input.boxes),
+        input.confidence === undefined ? null : input.confidence,
+        input.providerId ?? null,
+        input.snapshot ?? null,
         Date.now(),
       );
     return this.getEvent(id)!;
@@ -340,6 +353,10 @@ export class RecordingIndex {
       assignments.push('boxes = ?');
       values.push(JSON.stringify(patch.boxes));
     }
+    if (patch.snapshot !== undefined) {
+      assignments.push('snapshot = ?');
+      values.push(patch.snapshot);
+    }
     if (assignments.length === 0) return this.getEvent(id);
     values.push(id);
     this.db.prepare(`UPDATE events SET ${assignments.join(', ')} WHERE id = ?`).run(...values);
@@ -361,6 +378,14 @@ export class RecordingIndex {
     if (query.kind !== undefined) {
       clauses.push('kind = ?');
       params.push(query.kind);
+    }
+    if (query.label !== undefined) {
+      clauses.push('LOWER(label) LIKE ?');
+      params.push(`%${query.label.toLowerCase()}%`);
+    }
+    if (query.providerId !== undefined) {
+      clauses.push('provider_id = ?');
+      params.push(query.providerId);
     }
     if (query.from !== undefined) {
       clauses.push('started_at >= ?');
@@ -468,6 +493,9 @@ function mapEvent(row: EventRow): RecordedEvent {
     ...(row.peak_percent === null ? {} : { peakPercent: Number(row.peak_percent) }),
     ...(row.label === null ? {} : { label: row.label }),
     ...(row.boxes === null ? {} : { boxes: safeParse(row.boxes) }),
+    ...(row.confidence === null ? {} : { confidence: Number(row.confidence) }),
+    ...(row.provider_id === null ? {} : { providerId: row.provider_id }),
+    ...(row.snapshot === null ? {} : { snapshot: row.snapshot }),
   };
 }
 

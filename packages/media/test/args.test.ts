@@ -282,6 +282,30 @@ describe('detect and snapshot args', () => {
     assert.equal(args[indexOfValue(args, '-f') + 1], 'mjpeg');
   });
 
+  test('snapshot crops to a normalized rectangle before scaling', () => {
+    const result = buildSnapshotArgs({
+      source: rtsp,
+      maxWidth: 640,
+      crop: { x: 0.25, y: 0.5, width: 0.5, height: 0.25 },
+    });
+    const filter = result.args[indexOfValue(result.args, '-vf') + 1] ?? '';
+    assert.equal(filter, 'crop=in_w*0.5:in_h*0.25:in_w*0.25:in_h*0.5,scale=640:-2');
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test('snapshot ignores an unusable crop and says so', () => {
+    const result = buildSnapshotArgs({ source: rtsp, crop: { x: 0.9, y: 0.9, width: 0.5, height: 0.5 } });
+    // The rectangle is clipped to the frame, so a tenth of it remains: usable.
+    assert.equal(
+      result.args[indexOfValue(result.args, '-vf') + 1],
+      'crop=in_w*0.1:in_h*0.1:in_w*0.9:in_h*0.9',
+    );
+
+    const empty = buildSnapshotArgs({ source: rtsp, crop: { x: 1, y: 1, width: 0.5, height: 0.5 } });
+    assert.equal(empty.args.includes('-vf'), false);
+    assert.equal(empty.warnings.length, 1);
+  });
+
   test('probe targets the resolved URL with the JSON reader', () => {
     const result = buildProbeArgs(rtsp);
     assert.ok(result.args.includes('-print_format'));

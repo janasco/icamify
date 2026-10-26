@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { LivePlayer, type PlayerPhase, type StreamMeta } from '../live';
-import type { CameraView, MotionRuntime } from '../types';
+import type { AiRuntime, CameraView, MotionRuntime } from '../types';
 
 const props = defineProps<{
   camera: CameraView;
   /** Live motion episode pushed over the control socket. */
   motion?: MotionRuntime | null;
+  /** Live AI detections, cleared a few seconds after the last one. */
+  ai?: AiRuntime | null;
   canConfigure?: boolean;
 }>();
-const emit = defineEmits<{ (event: 'configure'): void }>();
+const emit = defineEmits<{ (event: 'configure'): void; (event: 'ai-configure'): void }>();
 
 const tile = ref<HTMLDivElement | null>(null);
 const video = ref<HTMLVideoElement | null>(null);
@@ -26,6 +28,13 @@ let noticeTimer: number | null = null;
 const recordingState = computed(() => props.camera.recording.state ?? 'off');
 const motionActive = computed(() => props.motion?.active === true || props.camera.motion.active === true);
 const motionBoxes = computed(() => props.motion?.boxes ?? []);
+const aiDetections = computed(() => (props.ai?.detections ?? []).filter((detection) => detection.box !== undefined));
+const aiLabels = computed(() => props.ai?.detections.map((detection) => detection.label) ?? []);
+const aiBadge = computed(() => {
+  const labels = aiLabels.value.length > 0 ? aiLabels.value : (props.camera.ai.lastLabels ?? []);
+  if (labels.length === 0) return 'AI';
+  return labels.slice(0, 2).join(' · ');
+});
 
 const mseSupported = computed(() => {
   const mse = props.camera.status.transports.find((entry) => entry.transport === 'mse');
@@ -183,6 +192,22 @@ watch(
       />
     </svg>
 
+    <div v-if="aiDetections.length > 0" class="ai-boxes" aria-hidden="true">
+      <div
+        v-for="(detection, index) in aiDetections"
+        :key="`${detection.label}-${index}`"
+        class="ai-box"
+        :style="{
+          left: `${(detection.box?.x ?? 0) * 100}%`,
+          top: `${(detection.box?.y ?? 0) * 100}%`,
+          width: `${(detection.box?.width ?? 0) * 100}%`,
+          height: `${(detection.box?.height ?? 0) * 100}%`,
+        }"
+      >
+        <span class="ai-box-label">{{ detection.label }} {{ Math.round(detection.confidence * 100) }}%</span>
+      </div>
+    </div>
+
     <div class="tile-overlay">
       <div class="tile-top">
         <div style="min-width: 0">
@@ -201,7 +226,15 @@ watch(
             <span v-if="camera.motion.enabled" class="pill" :class="{ warn: motionActive }" style="padding: 0 6px">
               {{ motionActive ? 'MOTION' : 'ZONES' }}
             </span>
-            <span v-if="camera.ai.enabled" class="pill" style="padding: 0 6px">AI</span>
+            <span
+              v-if="camera.ai.enabled"
+              class="pill"
+              :class="camera.ai.lastError ? 'err' : ai?.detections.length ? 'ok' : ''"
+              style="padding: 0 6px"
+              :title="camera.ai.lastError ?? `${camera.ai.providerName ?? camera.ai.providerId ?? 'AI'} · ${camera.ai.task ?? 'object'}`"
+            >
+              {{ aiBadge }}
+            </span>
           </div>
         </div>
         <div class="spacer"></div>
@@ -213,6 +246,14 @@ watch(
             @click.stop="emit('configure')"
           >
             ⚙
+          </button>
+          <button
+            v-if="canConfigure && (camera.ai.enabled || camera.ai.providerId !== undefined)"
+            class="icon-button"
+            title="AI settings"
+            @click.stop="emit('ai-configure')"
+          >
+            ✳
           </button>
           <button class="icon-button" title="Snapshot" @click.stop="openSnapshot">◉</button>
           <button class="icon-button" title="Reconnect" @click.stop="retry">↻</button>
@@ -234,6 +275,7 @@ watch(
             pre-buffer {{ camera.recording.bufferedSeconds }}s
           </span>
           <span v-if="motionActive && motion?.percent !== undefined" class="mono muted">{{ motion.percent }}%</span>
+          <span v-if="ai?.latencyMs !== undefined" class="mono muted">ai {{ ai.latencyMs }}ms</span>
           <span class="spacer"></span>
           <span v-if="camera.status.viewers > 0">{{ camera.status.viewers }} viewer{{ camera.status.viewers === 1 ? '' : 's' }}</span>
         </div>

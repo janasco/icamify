@@ -56,7 +56,19 @@ export interface CameraView {
     lastMotionAt?: number;
     lastError?: string;
   };
-  ai: { enabled: boolean; providerId?: string; labels: string[] };
+  ai: {
+    enabled: boolean;
+    providerId?: string;
+    providerName?: string;
+    task?: string;
+    labels: string[];
+    minConfidence?: number;
+    lastLabels?: string[];
+    lastDetectionAt?: number;
+    lastLatencyMs?: number;
+    lastError?: string;
+    circuit?: 'closed' | 'open' | 'unknown';
+  };
   ptz: { supported: boolean };
   hasSubStream: boolean;
   source: { type: string; label: string; masked: string };
@@ -200,6 +212,82 @@ export interface RecordedEvent {
   endedAt?: number;
   peakPercent?: number;
   label?: string;
+  confidence?: number;
+  providerId?: string;
+  snapshot?: string;
+}
+
+/** One live detection pushed over the control socket (`ai` message). */
+export interface AiDetection {
+  label: string;
+  confidence: number;
+  box?: NormalizedBox;
+}
+
+export interface AiRuntime {
+  cameraId: string;
+  at: number;
+  task: string;
+  providerId: string;
+  detections: AiDetection[];
+  latencyMs?: number;
+}
+
+/** A rule that fired (`alert` message). */
+export interface AlertRuntime {
+  ruleId: string;
+  ruleName: string;
+  cameraId: string;
+  at: number;
+  kind: string;
+  label?: string;
+  confidence?: number;
+  actions: Array<{ action: string; ok: boolean; detail?: string }>;
+  snapshot?: string;
+  eventId?: string;
+}
+
+export interface AiStatus {
+  cameraId: string;
+  enabled: boolean;
+  providerId?: string;
+  providerName?: string;
+  task: 'object' | 'face' | 'lpr' | 'scene';
+  capabilities: string[];
+  labels: string[];
+  minConfidence: number;
+  intervalMs: number;
+  cropToMotion: boolean;
+  saveSnapshots: boolean;
+  analyses: number;
+  detections: number;
+  lastDetectionAt?: number;
+  lastLatencyMs?: number;
+  lastLabels: string[];
+  lastError?: string;
+  circuit: 'closed' | 'open' | 'unknown';
+}
+
+export interface AiStatusResponse {
+  cameraId: string;
+  ai: AiStatus | null;
+}
+
+export interface AiDetectionResult {
+  cameraId: string;
+  at: number;
+  task: string;
+  providerId: string;
+  detections: AiDetection[];
+  latencyMs: number;
+  snapshot?: string;
+  eventIds?: string[];
+  reason?: string;
+  ai?: AiStatus | null;
+}
+
+export interface EventList {
+  events: RecordedEvent[];
 }
 
 export interface RecordingList {

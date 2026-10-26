@@ -2,9 +2,14 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CORE_VERSION, loadConfig, type ResolvedIcamifyConfig } from '@icamify/core';
+import { CORE_VERSION, activeSchedules, loadConfig, type ResolvedIcamifyConfig } from '@icamify/core';
+import { Gateway as AiGateway, jpegSize } from '@icamify/ai';
 import { MediaEngine, locateFfmpeg, versionText, type FfmpegToolchain } from '@icamify/media';
 import { LiveRegistry } from '@icamify/stream';
+import { Notifier } from './alerts/notifier.ts';
+import { createPluginResolver } from './ai/plugins.ts';
+import { AiService, type AiDetectionSummary, type AiServiceEvent, type CaptureFrame } from './ai/service.ts';
+import { snapshotRelativePath, writeSnapshot } from './ai/snapshots.ts';
 import { AuthService } from './http/auth.ts';
 import { Router } from './http/router.ts';
 import { createAppServer, type AppServer, type ListenResult, type RequestLogEntry } from './http/server.ts';
@@ -13,6 +18,7 @@ import { createLiveSourceFactory } from './media/live-source.ts';
 import { MotionService, type MotionServiceEvent } from './motion/service.ts';
 import { RecordingManager, type RecordingHubEvent } from './recording/manager.ts';
 import { registerRoutes } from './routes/index.ts';
+import { RuleEngine, type RuleEngineEvent } from './rules/engine.ts';
 import { CameraRuntime } from './runtime.ts';
 import { resolveStoragePaths } from './storage-paths.ts';
 import { SignalingService } from './webrtc/signaling.ts';
@@ -50,6 +56,8 @@ export interface RunningServer {
   signaling: SignalingService;
   recording: RecordingManager;
   motion: MotionService;
+  ai: AiService;
+  rules: RuleEngine;
   config: ResolvedIcamifyConfig;
   toolchain: FfmpegToolchain;
   listen: ListenResult;
@@ -104,9 +112,44 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const storagePaths = resolveStoragePaths(config);
   await mkdir(storagePaths.stateDir, { recursive: true });
   await mkdir(storagePaths.recordingsDir, { recursive: true });
+  await mkdir(storagePaths.snapshotsDir, { recursive: true });
+
+  /**
+   * One still frame for the AI layer. The sub-stream is used when the camera has
+   * one: detection needs a recognizable picture, not a 4K frame, and the crop is
+   * expressed in source-relative coordinates either way.
+   */
+  const captureFrame: CaptureFrame = async (camera, options) => {
+    const source = camera.streams.sub ?? camera.streams.main;
+    const jpeg = await media.snapshot(source, options.maxWidth, {
+      ...(options.crop === undefined ? {} : { crop: options.crop }),
+      timeoutMs: 15_000,
+    });
+    const size = jpegSize(jpeg);
+    if (size === undefined) throw new Error('the snapshot was not a readable JPEG');
+    return { jpeg, width: size.width, height: size.height };
+  };
+
+  const plugins = createPluginResolver({
+    directories: config.plugins.directories ?? [],
+    trustedPlugins: config.plugins.trustedPlugins ?? [],
+    enabled: config.plugins.enabled !== false,
+    log,
+  });
+  const gateway = new AiGateway({
+    providers: config.ai.providers ?? [],
+    plugin: {
+      resolveEntry: (pluginId) => plugins.resolveEntry(pluginId),
+      ...(config.plugins.workerMemoryMb === undefined ? {} : { workerMemoryMb: config.plugins.workerMemoryMb }),
+      log,
+    },
+    log,
+  });
 
   let pushRecording: ((event: RecordingHubEvent) => void) | undefined;
   let pushMotion: ((event: MotionServiceEvent) => void) | undefined;
+  let pushAi: ((event: AiServiceEvent) => void) | undefined;
+  let pushRule: ((event: RuleEngineEvent) => void) | undefined;
 
   const recording = new RecordingManager({
     config,
@@ -116,14 +159,100 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     onEvent: (event) => pushRecording?.(event),
   });
 
-  // Motion is the trigger source for motion-mode recording; the two are wired
-  // through a callback so neither service depends on the other.
+  const notifier = new Notifier({
+    channels: config.notifications.channels ?? [],
+    ...(config.notifications.dedupeSeconds === undefined ? {} : { dedupeSeconds: config.notifications.dedupeSeconds }),
+    log,
+  });
+
+  const rules = new RuleEngine({
+    config,
+    recording,
+    index: recording.index,
+    notifier,
+    scheduleActive: (ids, at) => activeSchedules(config.schedules, new Date(at), ids).active,
+    snapshot: async (cameraId, labels) => {
+      const camera = config.cameras.find((candidate) => candidate.id === cameraId);
+      if (camera === undefined) return undefined;
+      const frame = await captureFrame(camera, { maxWidth: config.storage.snapshot?.maxWidth ?? 1280 });
+      return await writeSnapshot(
+        storagePaths.snapshotsDir,
+        snapshotRelativePath(cameraId, Date.now(), labels),
+        frame.jpeg,
+      );
+    },
+    log,
+    onEvent: (event) => pushRule?.(event),
+  });
+
+  const aiService = new AiService({
+    config,
+    gateway,
+    capture: captureFrame,
+    index: recording.index,
+    recording,
+    snapshotsDir: storagePaths.snapshotsDir,
+    log,
+    onEvent: (event) => pushAi?.(event),
+    onDetections: (summary) => handleDetections(summary),
+  });
+
+  /** Each detected label is a separate rule event: "person" and "dog" differ. */
+  function handleDetections(summary: AiDetectionSummary): void {
+    const byLabel = new Map<string, { confidence: number }>();
+    for (const detection of summary.detections) {
+      const current = byLabel.get(detection.label);
+      if (current === undefined || detection.confidence > current.confidence) {
+        byLabel.set(detection.label, { confidence: detection.confidence });
+      }
+    }
+    for (const [label, { confidence }] of byLabel) {
+      void rules.handle({
+        cameraId: summary.cameraId,
+        cameraName: summary.cameraName,
+        kind: `ai.${summary.task}`,
+        at: summary.at,
+        label,
+        confidence,
+        providerId: summary.providerId,
+        boxes: summary.boxes,
+        ...(summary.snapshot === undefined ? {} : { snapshot: summary.snapshot }),
+        ...(summary.eventIds[0] === undefined ? {} : { id: summary.eventIds[0] }),
+      });
+    }
+  }
+
+  // Motion is the trigger source for motion-mode recording and AI analysis; the
+  // services are wired through callbacks so none of them depends on another.
   const motion = new MotionService({
     config,
     media,
     log,
-    onMotionStart: (cameraId, at, detail) =>
-      recording.trigger(cameraId, 'motion', at, { peakPercent: detail.peakPercent, boxes: detail.boxes }),
+    onMotionStart: (cameraId, at, detail) => {
+      recording.trigger(cameraId, 'motion', at, { peakPercent: detail.peakPercent, boxes: detail.boxes });
+      void aiService.analyze(cameraId, { boxes: detail.boxes });
+      void rules.handle({
+        ...(detail.episodeId === undefined ? {} : { id: detail.episodeId }),
+        cameraId,
+        kind: 'motion',
+        at,
+        phase: 'start',
+        durationSeconds: 0,
+        confidence: detail.peakPercent / 100,
+        boxes: detail.boxes,
+      });
+    },
+    onMotionEnd: (cameraId, _at, detail) => {
+      void rules.handle({
+        id: detail.episodeId,
+        cameraId,
+        kind: 'motion',
+        at: detail.startedAt,
+        phase: 'end',
+        durationSeconds: detail.durationSeconds,
+        boxes: detail.boxes,
+      });
+    },
     onEvent: (event) => pushMotion?.(event),
   });
 
@@ -134,6 +263,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     log,
     recording,
     motionStatus: (cameraId) => motion.status(cameraId),
+    aiStatus: (cameraId) => aiService.status(cameraId),
   });
   const auth = new AuthService({ auth: config.auth, onWarning: (message) => log(`warn: ${message}`) });
   const signaling = new SignalingService({ config, log });
@@ -153,6 +283,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     signaling,
     recording,
     motion,
+    ai: aiService,
+    rules,
+    gateway,
+    snapshotsDir: storagePaths.snapshotsDir,
     version: CORE_VERSION,
     startedAt: runtime.startedAt,
     toolchain,
@@ -218,6 +352,55 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     if (event.type !== 'motion') pushStatus?.(event.cameraId);
   };
 
+  pushAi = (event: AiServiceEvent) => {
+    if (event.type === 'ai:detection') {
+      hub.broadcast(
+        {
+          type: 'ai',
+          cameraId: event.summary.cameraId,
+          at: event.summary.at,
+          task: event.summary.task,
+          providerId: event.summary.providerId,
+          latencyMs: event.summary.latencyMs,
+          detections: event.summary.detections,
+          ...(event.summary.snapshot === undefined ? {} : { snapshot: event.summary.snapshot }),
+        },
+        'cameras',
+      );
+      pushStatus?.(event.summary.cameraId);
+      return;
+    }
+    if (event.type === 'ai:error') {
+      hub.broadcast(
+        { type: 'ai:error', cameraId: event.cameraId, at: event.at, message: event.message },
+        'cameras',
+      );
+      pushStatus?.(event.cameraId);
+      return;
+    }
+    // Status changes are reflected in the camera payload the UI already tracks.
+  };
+
+  pushRule = (event: RuleEngineEvent) => {
+    hub.broadcast(
+      {
+        type: 'alert',
+        ruleId: event.outcome.ruleId,
+        ruleName: event.outcome.ruleName,
+        cameraId: event.outcome.cameraId,
+        at: event.outcome.at,
+        kind: event.trigger.kind,
+        ...(event.trigger.label === undefined ? {} : { label: event.trigger.label }),
+        ...(event.trigger.confidence === undefined ? {} : { confidence: event.trigger.confidence }),
+        actions: event.outcome.actions,
+        ...(event.outcome.snapshot === undefined ? {} : { snapshot: event.outcome.snapshot }),
+        ...(event.outcome.alertEventId === undefined ? {} : { eventId: event.outcome.alertEventId }),
+      },
+      'cameras',
+    );
+    pushStatus?.(event.outcome.cameraId);
+  };
+
   const server = createAppServer({
     config,
     auth,
@@ -240,6 +423,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   // `listen`, and a failing camera must not keep the API from coming up.
   await recording.start();
   await motion.start();
+  // Started even when ai.enabled is false so saved per-camera overrides are loaded
+  // and reported; `analyze()` itself is a no-op while AI is disabled.
+  await aiService.start();
 
   // Announce once so an operator sees why a camera stayed dark.
   log(
@@ -249,6 +435,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   log(
     `recording: ${recording.startedRecorders} camera(s) → ${storagePaths.recordingsDir}; ` +
       `motion: ${motion.workerCount} camera(s) analysing; index at ${recording.index.path}`,
+  );
+  log(
+    `ai: ${aiService.statuses().length} camera(s), ${gateway.providerIds().length} provider(s); ` +
+      `rules: ${rules.rules.filter((rule) => rule.enabled !== false).length} enabled; ` +
+      `snapshots → ${storagePaths.snapshotsDir}`,
   );
 
   let closing: Promise<void> | undefined;
@@ -261,6 +452,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           await hub.close().catch(() => undefined);
           await liveStream.close().catch(() => undefined);
           await motion.stop().catch(() => undefined);
+          await aiService.stop().catch(() => undefined);
+          await gateway.close().catch(() => undefined);
           await recording.stop().catch(() => undefined);
           recording.close();
           await registry.shutdown().catch(() => undefined);
@@ -282,6 +475,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     signaling,
     recording,
     motion,
+    ai: aiService,
+    rules,
     config,
     toolchain,
     listen,

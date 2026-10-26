@@ -4,7 +4,13 @@ import { probeStream } from './ingest/probe.ts';
 import { IngestSupervisor, type IngestEvent } from './ingest/supervisor.ts';
 import { buildPipelinePlan, type PipelinePlan, type PipelinePlanOptions } from './plan.ts';
 import { captureSnapshot } from './snapshot.ts';
-import type { MediaEngineOptions, MediaPipeline, PipelinePurpose, StreamProbe } from './types.ts';
+import type {
+  MediaEngineOptions,
+  MediaPipeline,
+  PipelinePurpose,
+  SnapshotCaptureOptions,
+  StreamProbe,
+} from './types.ts';
 
 export * from './types.ts';
 export * from './errors.ts';
@@ -41,6 +47,7 @@ export {
   type LiveOutput,
   type RecordBuildOptions,
   type SnapshotBuildOptions,
+  type SnapshotCrop,
 } from './ffmpeg/args.ts';
 export {
   FfmpegProcess,
@@ -133,11 +140,17 @@ export class MediaEngine implements MediaPipeline {
     });
   }
 
-  async snapshot(source: CameraConfig['streams']['main'], maxWidth?: number): Promise<Buffer> {
+  async snapshot(
+    source: CameraConfig['streams']['main'],
+    maxWidth?: number,
+    options: SnapshotCaptureOptions = {},
+  ): Promise<Buffer> {
     const result = await captureSnapshot(source, {
       ffmpegPath: this.options.ffmpegPath,
       maxWidth,
-      timeoutMs: this.options.snapshotTimeoutMs,
+      ...(options.quality === undefined ? {} : { quality: options.quality }),
+      ...(options.crop === undefined ? {} : { crop: options.crop }),
+      timeoutMs: options.timeoutMs ?? this.options.snapshotTimeoutMs,
     });
     return result.jpeg;
   }

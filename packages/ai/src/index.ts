@@ -1,7 +1,7 @@
 import type { AiCapability, AiProviderConfig, CameraConfig } from '@icamify/core';
 
 /**
- * AI gateway contracts (Phase 4).
+ * AI gateway contracts.
  *
  * One narrow interface fronts every detector, whether it is a local
  * CodeProject.AI instance, DeepStack, a bespoke HTTP service or an out-of-process
@@ -72,3 +72,39 @@ export interface AiGatewayOptions {
   onDetection?(cameraId: string, detections: Detection[], request: DetectionRequest): void;
   onError?(providerId: string, error: Error): void;
 }
+
+export { AiError, type AiErrorCode } from './errors.ts';
+export { Gateway, type GatewayOptions, type ProviderHealth, type ProviderStatus } from './gateway.ts';
+export { getJson, postImage, postJson, type FetchLike } from './http.ts';
+export { isJpeg, jpegSize } from './image.ts';
+export {
+  clamp,
+  labelMatches,
+  normalizeBox,
+  readBox,
+  readCornerBox,
+  readPath,
+  remapBox,
+  sanitizeLabel,
+  toConfidence,
+  unionBox,
+  type BoxSpec,
+  type CropRect,
+  type MappedBox,
+  type PixelSize,
+} from './mapping.ts';
+export {
+  explainRule,
+  interpolateTemplate,
+  matchingRules,
+  ruleMatches,
+  type RuleContext,
+  type RuleEvent,
+} from './rules.ts';
+export { createCodeProjectProvider, type CodeProjectProviderOptions } from './providers/codeproject.ts';
+export { createDeepStackProvider, type DeepStackProviderOptions } from './providers/deepstack.ts';
+export { createGenericProvider, type GenericProviderOptions } from './providers/generic.ts';
+export { createPluginProvider, type PluginProviderOptions } from './providers/plugin.ts';
+export type { HostToPlugin, PluginToHost, PluginWorkerData } from './plugin-protocol.ts';
+
+export const AI_VERSION = '0.1.0';

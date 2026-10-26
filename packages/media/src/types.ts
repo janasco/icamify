@@ -46,6 +46,8 @@ export interface SnapshotOptions extends SourceBuildOptions {
   ffmpegPath: string;
   maxWidth?: number;
   quality?: number;
+  /** Normalized rectangle to keep; the AI layer crops to the motion region. */
+  crop?: { x: number; y: number; width: number; height: number };
   timeoutMs?: number;
   runner?: SnapshotRunner;
 }
@@ -74,5 +76,11 @@ export interface MediaEngineOptions {
 /** Narrow surface used by the API/timeline layers; the camera supervisor owns restarts. */
 export interface MediaPipeline {
   probe(source: CameraConfig['streams']['main'], timeoutMs?: number): Promise<StreamProbe>;
-  snapshot(source: CameraConfig['streams']['main'], maxWidth?: number): Promise<Buffer>;
+  snapshot(source: CameraConfig['streams']['main'], maxWidth?: number, options?: SnapshotCaptureOptions): Promise<Buffer>;
+}
+
+export interface SnapshotCaptureOptions {
+  quality?: number;
+  crop?: { x: number; y: number; width: number; height: number };
+  timeoutMs?: number;
 }

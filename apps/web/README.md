@@ -3,9 +3,9 @@
 Zero-plugin Vue 3 SPA built with Vite. Same origin as the API, so the session
 cookie, WebSocket and MSE socket need no CORS configuration.
 
-**Phase:** 3 (grid + MSE/MJPEG live view + motion overlay + zone editor + clips).
-The visual timeline and settings editors come later; the console links no dead
-controls for them.
+**Phase:** 4 (grid + MSE/MJPEG live view + motion/AI overlays + zone editor +
+clips + event log + AI settings). The visual timeline and PTZ controls come later;
+the console links no dead controls for them.
 
 ## Layout
 
@@ -20,9 +20,10 @@ src/
   components/
     LoginView.vue            username/password, actionable hints
     Dashboard.vue            top bar, camera rail, grid, control socket, drawers
-    CameraTile.vue           per-tile player, motion boxes, REC state, snapshot, fullscreen
+    CameraTile.vue           per-tile player, motion/AI boxes, REC state, snapshot, fullscreen
     MotionEditor.vue         paintable zone matrix + sensitivity (GET/PUT motion API)
-    ClipsPanel.vue           recordings drawer, inline playback from the Range endpoint
+    AiEditor.vue             per-camera AI task, label filter, confidence, detect-now (GET/PUT/POST AI API)
+    ClipsPanel.vue           recordings + events drawer, inline playback from the Range endpoint
 ```
 
 ## Transport ladder
@@ -69,10 +70,18 @@ src/
   switch include/exclude, fill/clear/invert, set sensitivity, save. Saving sends
   `PUT /api/cameras/:id/motion` (operator or admin) and the mask is persisted
   server-side, so it survives a reload and a restart.
-- The Clips button opens the recordings drawer. Clips arrive live over
-  `recording:segment`; the selected clip plays inline from
-  `/api/recordings/:id/file` (the browser uses byte ranges to seek within an MKV)
-  and can be downloaded. The drawer follows the focused camera.
+- `ai` messages draw the detected boxes in green with a `label confidence%` tag
+  for six seconds after the last analysis, and the tile badge shows the last labels
+  (or the AI error, in red). The tile footer shows the detector latency.
+- The Clips button opens the drawer: **Clips** lists finalized segments (live via
+  `recording:segment`) with inline playback from `/api/recordings/:id/file` and a
+  download link; **Events** lists motion, `ai.*` and `rule` rows from `/api/events`
+  with confidence and a link to the saved snapshot (`/api/events/:id/snapshot`).
+  Both follow the focused camera.
+- The ✳ button opens the AI panel: enable analysis, choose the task the provider
+  declares, edit the label filter, set the confidence floor, and run **Detect now**
+  against the real pipeline to see actual detections, boxes, latency and the
+  snapshot.
 - Viewers see the gear and the save button disabled: the API requires `operator`,
   and the UI does not offer an action the server will reject.
 

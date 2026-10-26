@@ -338,3 +338,93 @@ describe('control WebSocket', () => {
     });
   });
 });
+
+describe('AI and rules API', () => {
+  test('reports the AI feature and an empty provider list when none are configured', async () => {
+    await withServer(testConfig({ auth: EMPTY_AUTH }), async (server) => {
+      const system = await request(server, '/api/system');
+      assert.equal((system.json as { features: { ai: boolean } }).features.ai, true);
+
+      const providers = await request(server, '/api/ai/providers');
+      assert.equal(providers.status, 200);
+      assert.deepEqual((providers.json as { providers: unknown[] }).providers, []);
+    });
+  });
+
+  test('returns null AI status for a camera without an AI block, then accepts one', async () => {
+    await withServer(testConfig({ auth: EMPTY_AUTH }), async (server) => {
+      const before = await request(server, '/api/cameras/front-door/ai');
+      assert.equal(before.status, 200);
+      assert.equal((before.json as { ai: unknown }).ai, null);
+
+      const updated = await request(server, '/api/cameras/front-door/ai', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ labels: ['person', 'car'], minConfidence: 0.7 }),
+      });
+      assert.equal(updated.status, 200);
+      const status = (updated.json as { ai: { labels: string[]; minConfidence: number; task: string } }).ai;
+      assert.deepEqual(status.labels, ['person', 'car']);
+      assert.equal(status.minConfidence, 0.7);
+      assert.equal(status.task, 'object');
+
+      const invalid = await request(server, '/api/cameras/front-door/ai', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ minConfidence: 5 }),
+      });
+      assert.equal(invalid.status, 400);
+      assert.equal((invalid.json as { error: { code: string } }).error.code, 'invalid-ai-settings');
+    });
+  });
+
+  test('manual detection explains why nothing ran instead of failing silently', async () => {
+    await withServer(testConfig({ auth: EMPTY_AUTH }), async (server) => {
+      const response = await request(server, '/api/cameras/front-door/ai/detect', { method: 'POST' });
+      assert.equal(response.status, 200);
+      const body = response.json as { detections: unknown[]; reason?: string };
+      assert.deepEqual(body.detections, []);
+      assert.match(String(body.reason), /provider/i);
+    });
+  });
+
+  test('lists rules and channels, marking the unimplemented channels', async () => {
+    const config = testConfig({ auth: EMPTY_AUTH });
+    config.rules = [
+      { id: 'person', name: 'Person', when: { events: ['ai.object'] }, then: { notify: { channels: ['hook', 'tg'] } } },
+    ];
+    config.notifications = {
+      dedupeSeconds: 15,
+      channels: [
+        { id: 'hook', name: 'Hook', type: 'webhook', url: 'http://127.0.0.1:9/hook' },
+        { id: 'tg', name: 'Telegram', type: 'telegram', botToken: 'x', chatId: '1' },
+      ],
+    };
+    await withServer(config, async (server) => {
+      const response = await request(server, '/api/rules');
+      assert.equal(response.status, 200);
+      const body = response.json as {
+        rules: Array<{ id: string }>;
+        channels: Array<{ id: string; implemented: boolean }>;
+        dedupeSeconds: number;
+      };
+      assert.deepEqual(body.rules.map((rule) => rule.id), ['person']);
+      assert.deepEqual(
+        body.channels.map((channel) => [channel.id, channel.implemented]),
+        [
+          ['hook', true],
+          ['tg', false],
+        ],
+      );
+      assert.equal(body.dedupeSeconds, 15);
+    });
+  });
+
+  test('serves a saved detection snapshot and rejects an unknown event', async () => {
+    await withServer(testConfig({ auth: EMPTY_AUTH }), async (server) => {
+      const missing = await request(server, '/api/events/does-not-exist/snapshot');
+      assert.equal(missing.status, 404);
+      assert.equal((missing.json as { error: { code: string } }).error.code, 'event-not-found');
+    });
+  });
+});

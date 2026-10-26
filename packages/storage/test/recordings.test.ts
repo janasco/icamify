@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { RecordingIndex } from '../src/recordings.ts';
 import { schemaVersion } from '../src/db.ts';
@@ -27,8 +31,38 @@ function segment(overrides: Partial<Parameters<RecordingIndex['insertSegment']>[
 describe('RecordingIndex', () => {
   it('creates its schema on open', () => {
     const db = index();
-    assert.equal(schemaVersion(db['db'] as never), 1);
+    assert.equal(schemaVersion(db['db'] as never), 2);
     db.close();
+  });
+
+  it('upgrades a v1 events table in place', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'icamify-index-')), 'v1.db');
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY, camera_id TEXT NOT NULL, kind TEXT NOT NULL,
+        started_at INTEGER NOT NULL, ended_at INTEGER, peak_percent REAL,
+        label TEXT, boxes TEXT, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+    `);
+    legacy.close();
+
+    const db = new RecordingIndex({ path });
+    assert.equal(schemaVersion(db['db'] as never), 2);
+    const stored = db.insertEvent({
+      cameraId: CAM,
+      kind: 'ai.object',
+      startedAt: 5_000,
+      label: 'person',
+      confidence: 0.88,
+      providerId: 'cpai',
+    });
+    assert.equal(db.getEvent(stored.id)?.confidence, 0.88);
+    assert.equal(db.getEvent(stored.id)?.providerId, 'cpai');
+    db.close();
+    rmSync(dirname(path), { recursive: true, force: true });
   });
 
   it('inserts and reads a segment', () => {
@@ -128,6 +162,35 @@ describe('RecordingIndex', () => {
     assert.deepEqual(closed?.boxes, [{ x: 1, y: 2, width: 3, height: 4 }]);
     assert.equal(db.eventCount(), 1);
     assert.equal(db.eventCount(OTHER), 0);
+    db.close();
+  });
+
+  it('stores detections with label, confidence, provider and snapshot', () => {
+    const db = index();
+    const stored = db.insertEvent({
+      cameraId: CAM,
+      kind: 'ai.object',
+      startedAt: 9_000,
+      label: 'person',
+      confidence: 0.93,
+      providerId: 'cpai',
+      snapshot: '0000001',
+      boxes: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.4 }],
+    });
+    assert.equal(stored.label, 'person');
+    assert.equal(stored.confidence, 0.93);
+    assert.equal(stored.providerId, 'cpai');
+    assert.equal(stored.snapshot, '0000001');
+
+    db.insertEvent({ cameraId: CAM, kind: 'ai.object', startedAt: 10_000, label: 'Person/Adult', confidence: 0.6, providerId: 'ds' });
+    db.insertEvent({ cameraId: CAM, kind: 'motion', startedAt: 11_000 });
+
+    assert.equal(db.listEvents({ label: 'person' }).length, 2);
+    assert.equal(db.listEvents({ providerId: 'ds' }).length, 1);
+    assert.equal(db.listEvents({ kind: 'motion' }).length, 1);
+
+    db.updateEvent(stored.id, { snapshot: '0000002' });
+    assert.equal(db.getEvent(stored.id)?.snapshot, '0000002');
     db.close();
   });
 

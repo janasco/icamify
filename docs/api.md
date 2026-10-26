@@ -1,4 +1,4 @@
-# iCamify API (Phase 3)
+# iCamify API (Phase 4)
 
 The HTTP API, control WebSocket and the two media endpoints the console uses.
 Everything is served from the same origin as the console, so there is no CORS
@@ -85,11 +85,17 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/recordings/:id` | optional | One clip plus the events linked to it. |
 | GET | `/api/recordings/:id/file` | optional | The clip file with `Range` support. |
 | GET | `/api/events` | optional | Motion/AI/rule events from the index. |
-| WS (upgrade) | `/ws` | optional | Control channel: status push + WebRTC signaling + motion/clip events. |
+| GET | `/api/events/:id/snapshot` | optional | Saved detection JPEG for an event (`404` when the event has none). |
+| GET | `/api/cameras/:id/ai` | optional | AI status: provider, task, labels, counters, last crop/error. |
+| PUT | `/api/cameras/:id/ai` | operator | `{enabled?, task?, labels?, minConfidence?}`; persists a runtime override. |
+| POST | `/api/cameras/:id/ai/detect` | operator | One analysis now (`{boxes?}` optional); returns detections + status. |
+| GET | `/api/ai/providers?health=1` | optional | Provider status (requests, errors, circuit) and, for a signed-in caller, a live health probe. |
+| GET | `/api/rules` | optional | Configured rules and which notification channels are implemented. |
+| WS (upgrade) | `/ws` | optional | Control channel: status push + WebRTC signaling + motion/clip/AI/alert events. |
 
-Not implemented yet: retention/purge writes, ONVIF scan, PTZ commands, settings
-writes beyond motion tuning, and the AI gateway (Phases 4–5). The console links
-no dead controls for them.
+Not implemented yet: retention/purge writes, ONVIF scan, PTZ commands, PTZ/script
+rule actions, email/MQTT/Telegram delivery, and settings writes beyond motion and
+AI tuning (Phases 4b–5). The console links no dead controls for them.
 
 ---
 
@@ -170,6 +176,91 @@ the as-shipped source of truth. Setting `sensitivity` re-derives the thresholds,
 which means explicit `threshold`/`percentThreshold` values in the config stop
 applying for that camera (the response reports `derivedFromSensitivity`).
 
+## AI detection
+
+`GET /api/cameras/:id/ai` returns the per-camera view even when the pipeline never
+started, because the labels and threshold are what an operator needs to fix it:
+
+```json
+{
+  "cameraId": "front-door", "enabled": true,
+  "providerId": "codeproject-objects", "providerName": "CodeProject.AI (objects)",
+  "task": "object", "capabilities": ["object"],
+  "labels": ["person", "package"], "minConfidence": 0.55, "intervalMs": 750,
+  "cropToMotion": true, "saveSnapshots": true,
+  "analyses": 42, "detections": 17, "lastDetectionAt": 1793000942000,
+  "lastLatencyMs": 96, "lastLabels": ["person"],
+  "lastCrop": {"x": 0.31, "y": 0.22, "width": 0.28, "height": 0.4, "normalized": true},
+  "circuit": "closed"
+}
+```
+
+`PUT` accepts `{enabled, task, labels, minConfidence}`; `task` is one of
+`object`, `face`, `lpr`, `scene` and must be declared by the provider. The override
+is stored in `<storage.stateDir>/ai-overrides.json` and survives restarts.
+
+`POST /api/cameras/:id/ai/detect` runs exactly one analysis through the real
+pipeline (capture → crop → detector → filter) and answers:
+
+```json
+{
+  "cameraId": "front-door", "at": 1793000942000, "task": "object", "providerId": "codeproject-objects",
+  "latencyMs": 118, "snapshot": "front-door/2026-10-26/122222-person.jpg", "eventIds": ["evt_…"],
+  "detections": [
+    {"label": "person", "confidence": 0.88, "box": {"x": 0.095, "y": 0.088, "width": 0.473, "height": 0.7, "normalized": true}}
+  ]
+}
+```
+
+With no usable provider it returns `200` with `detections: []` and a `reason`, so
+the console can show the cause instead of an empty panel.
+
+### How frames reach the detector
+
+1. Motion starts an episode → the AI service is called with the episode's boxes.
+2. `intervalMs` per camera and an in-flight guard are enforced *before* capture.
+3. One still is grabbed from the sub-stream (`streams.sub`, else main) at
+   `storage.snapshot.maxWidth`; with `cropToMotion` the FFmpeg `crop` filter keeps
+   only the padded union of the motion boxes.
+4. The provider answers in pixels of the submitted image. iCamify reads the JPEG
+   SOF header for its size, normalizes each box, and remaps it into full-frame
+   coordinates when the frame was cropped.
+5. Labels and `minConfidence` are applied, `ai.maxDetectionsPerFrame` caps the list,
+   one event row is written per distinct label, and the result is handed to the
+   rule engine.
+
+Provider failures never block recording: the camera keeps producing motion events,
+the AI status carries `lastError`, and three consecutive failures open the
+provider circuit for 30 s.
+
+## Rules and notifications
+
+`GET /api/rules`:
+
+```json
+{
+  "rules": [{"id": "person-at-night", "name": "Person at night", "when": {"events": ["ai.object"], "ai": {"labels": ["person"]}}, "then": {"record": {"seconds": 45}}}],
+  "channels": [
+    {"id": "automation-webhook", "name": "Automation", "type": "webhook", "enabled": true, "implemented": true},
+    {"id": "telegram-alerts", "name": "Telegram", "type": "telegram", "enabled": true, "implemented": false}
+  ],
+  "dedupeSeconds": 30
+}
+```
+
+A matching rule executes, in order: index a `rule` event (`markEvent.label` or the
+rule name), start/extend an alert clip (`then.record.seconds`), save a snapshot
+(`then.snapshot`), deliver notifications (`then.notify`). `then.ptz` and
+`then.script` are reported as `not implemented` in the outcome and warned once.
+
+Webhook payloads are `POST`ed as JSON with `content-type: application/json` and,
+when the channel has `hmacSecret`, an `x-icamify-signature: sha256=<hex>` header
+covering the exact body. `bodyTemplate` supports `{cameraName}`, `{label}`,
+`{confidence}`, `{time}`, `{kind}`, `{ruleName}`, `{severity}`, `{title}`,
+`{message}` and `{snapshot}`. Identical alerts (channel + camera + rule + label)
+are suppressed for `notifications.dedupeSeconds`, and each rule honours its own
+`when.cooldownSeconds`.
+
 ## MSE media socket
 
 `GET (Upgrade) /api/cameras/:id/live.ws`
@@ -234,6 +325,9 @@ that stop reading are dropped at 4 MiB of queued data.
 | `motion` | `{cameraId, active, at, percent, peakPercent, boxes[]}` — episode start/end plus at most one update per second while active; boxes are 0..1 image coordinates. |
 | `recording:segment` | `{segment}` — a clip was finalized and indexed; the same object as in `GET /api/recordings`. |
 | `recording:event` | `{event, closed}` — a motion/rule episode opened or closed. |
+| `ai` | `{cameraId, at, task, providerId, latencyMs, detections:[{label, confidence, box?}], snapshot?}` — one analysis result; boxes are 0..1 full-frame coordinates. |
+| `ai:error` | `{cameraId, at, message}` — the detector failed, timed out or is not configured. |
+| `alert` | `{ruleId, ruleName, cameraId, at, kind, label?, confidence?, actions[], snapshot?, eventId?}` — a rule fired; `actions` reports what actually ran. |
 | `subscribed` | Acknowledges `subscribe`/`unsubscribe` with the current topics. |
 | `pong` | Answer to `ping`, echoing `t`. |
 | `webrtc:answer` | `{sessionId, cameraId, sdp}` for an accepted offer. |

@@ -1,6 +1,6 @@
 # @icamify/storage — recording index, quotas and retention
 
-**Phase:** 3 (index implemented) · 5 (retention/archive).
+**Phase:** 3 (index implemented) · 4 (detection fields) · 5 (retention/archive).
 
 The filesystem is the source of truth; SQLite only answers "which clips exist, what
 happened in them, and where are they". A lost or truncated database costs a rescan,
@@ -22,7 +22,8 @@ Node 24's built-in `node:sqlite` means the index adds no dependency.
 ```sql
 segments(id, camera_id, volume_id, path UNIQUE, started_at, ended_at, bytes,
          reason, has_motion, has_alert, protected, event_id, deleted_at, created_at)
-events(id, camera_id, kind, started_at, ended_at, peak_percent, label, boxes, created_at)
+events(id, camera_id, kind, started_at, ended_at, peak_percent, label, boxes,
+       confidence, provider_id, snapshot, created_at)
 segment_events(segment_id, event_id)          -- one clip can belong to several events
 meta(key, value)                              -- schema_version
 ```
@@ -54,6 +55,13 @@ Behaviour worth knowing:
   `protected = 1`, which is what a starred clip becomes.
 - **Timestamps are epoch milliseconds** and are the only ordering. File names are
   local-time strings for humans; the index never parses them for truth.
+- **Detections are events, not a second table.** An AI detection is an `ai.object`
+  / `ai.face` / `ai.lpr` / `ai.scene` row with `label`, `confidence`, `provider_id`,
+  the normalized `boxes` and, when saved, the `snapshot` path. `listEvents()` can
+  filter by `label` (case-insensitive substring), `providerId`, `kind` and window.
+- **Schema upgrades are additive.** `CREATE TABLE IF NOT EXISTS` plus a checked
+  `ALTER TABLE ... ADD COLUMN` migration (schema version 2) upgrades a v1 database
+  in place; the recording files are never touched.
 
 ## Planned (Phase 5)
 
@@ -65,7 +73,7 @@ archive/       # local, S3 (SigV4) and SFTP targets
 lock.ts        # single-writer lock so two purge loops cannot race
 ```
 
-Retention order:
+Retention order (detection rows and snapshots join the same purge in Phase 5):
 
 1. **Disk floor** — free space below `minFreeDiskGb` deletes oldest unprotected
    clips first (this wins over age/size).

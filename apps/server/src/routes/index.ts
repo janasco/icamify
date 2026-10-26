@@ -1,10 +1,14 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import type { ResolvedIcamifyConfig } from '@icamify/core';
 import { redactConfig } from '@icamify/core';
 import type { LiveRegistry } from '@icamify/stream';
 import type { FfmpegToolchain } from '@icamify/media';
+import type { AiOverride, AiService } from '../ai/service.ts';
+import { resolveSnapshotPath } from '../ai/snapshots.ts';
+import type { Gateway } from '@icamify/ai';
+import type { RuleEngine } from '../rules/engine.ts';
 import type { RecordingEventKind, RecordingSegment, SegmentReason } from '@icamify/storage';
 import type { AuthService, Principal } from '../http/auth.ts';
 import { HttpError, readJsonBody, sendBuffer, sendJson } from '../http/responses.ts';
@@ -36,6 +40,10 @@ export interface ApiDeps {
   publicUrl?: string;
   recording?: RecordingManager;
   motion?: MotionService;
+  ai?: AiService;
+  rules?: RuleEngine;
+  gateway?: Gateway;
+  snapshotsDir?: string;
   log?: (line: string) => void;
 }
 
@@ -179,7 +187,8 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
         features: {
           recording: deps.recording !== undefined,
           motion: deps.motion !== undefined,
-          ai: false,
+          ai: deps.ai !== undefined,
+          rules: deps.rules !== undefined,
           retention: false,
           // The timeline UI ships with the storage phase; the API it needs is live.
           timeline: deps.recording !== undefined,
@@ -285,6 +294,145 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
       }
     },
     { auth: 'required', role: 'operator' },
+  );
+
+  // -- AI --------------------------------------------------------------------
+
+  router.get(
+    '/api/cameras/:id/ai',
+    (context) => {
+      requireView(context);
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      sendJson(context.res, 200, { cameraId: camera.id, ai: deps.ai?.viewForCamera(camera) ?? null });
+    },
+    { auth: 'optional' },
+  );
+
+  router.put(
+    '/api/cameras/:id/ai',
+    async (context) => {
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      if (deps.ai === undefined) {
+        throw new HttpError(503, 'ai-unavailable', 'AI detection is not enabled on this server.');
+      }
+      const body = await readJsonBody(context.req, { maxBytes: 64 * 1024 });
+      const patch: AiOverride = {
+        ...(body.task === undefined ? {} : { task: body.task as AiOverride['task'] }),
+        ...(body.labels === undefined ? {} : { labels: body.labels as string[] }),
+        ...(body.minConfidence === undefined ? {} : { minConfidence: Number(body.minConfidence) }),
+        ...(body.enabled === undefined ? {} : { enabled: body.enabled === true }),
+      };
+      try {
+        const status = await deps.ai.configure(camera.id, patch);
+        deps.log?.(`ai settings updated for ${camera.id} by ${context.principal?.username ?? 'anonymous'}`);
+        sendJson(context.res, 200, { ai: status });
+      } catch (error) {
+        throw new HttpError(400, 'invalid-ai-settings', error instanceof Error ? error.message : String(error));
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  // Manual analysis is how an operator proves a detector works before trusting it
+  // with motion-triggered alerts.
+  router.post(
+    '/api/cameras/:id/ai/detect',
+    async (context) => {
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      if (deps.ai === undefined) {
+        throw new HttpError(503, 'ai-unavailable', 'AI detection is not enabled on this server.');
+      }
+      const body = await readJsonBody(context.req, { maxBytes: 16 * 1024 });
+      const boxes = Array.isArray(body.boxes)
+        ? (body.boxes as Array<{ x: number; y: number; width: number; height: number }>).map((box) => ({
+            x: Number(box.x),
+            y: Number(box.y),
+            width: Number(box.width),
+            height: Number(box.height),
+            normalized: true as const,
+          }))
+        : undefined;
+      try {
+        const summary = await deps.ai.analyze(camera.id, { manual: true, ...(boxes === undefined ? {} : { boxes }) });
+        if (summary === undefined) {
+          const status = deps.ai.viewForCamera(camera);
+          sendJson(context.res, 200, {
+            detections: [],
+            reason: status?.lastError ?? 'no detection was produced',
+            ai: status ?? null,
+          });
+          return;
+        }
+        sendJson(context.res, 200, { ...summary, ai: deps.ai.viewForCamera(camera) ?? null });
+      } catch (error) {
+        throw new HttpError(502, 'ai-analysis-failed', error instanceof Error ? error.message : String(error));
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.get(
+    '/api/ai/providers',
+    async (context) => {
+      requireView(context);
+      const providers = deps.gateway?.status() ?? [];
+      const health =
+        context.query.get('health') === '1' && context.principal !== undefined
+          ? await deps.gateway?.health()
+          : undefined;
+      sendJson(context.res, 200, {
+        providers,
+        ...(health === undefined ? {} : { health }),
+        cameras: deps.runtime.cameras().map((camera) => ({
+          id: camera.id,
+          name: camera.name,
+          enabled: camera.ai.enabled,
+          ...(camera.ai.providerId === undefined ? {} : { providerId: camera.ai.providerId }),
+          task: camera.ai.task,
+          lastLabels: camera.ai.lastLabels ?? [],
+          ...(camera.ai.lastError === undefined ? {} : { lastError: camera.ai.lastError }),
+        })),
+      });
+    },
+    { auth: 'optional' },
+  );
+
+  router.get(
+    '/api/rules',
+    (context) => {
+      requireView(context);
+      sendJson(context.res, 200, {
+        rules: deps.config.rules ?? [],
+        channels: (deps.config.notifications.channels ?? []).map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+          type: channel.type,
+          enabled: channel.enabled !== false,
+          implemented: channel.type === 'webhook',
+        })),
+        dedupeSeconds: deps.config.notifications.dedupeSeconds ?? 30,
+      });
+    },
+    { auth: 'optional' },
+  );
+
+  router.get(
+    '/api/events/:id/snapshot',
+    async (context) => {
+      requireView(context);
+      const recording = requireRecording();
+      const event = recording.index.getEvent(context.params.id ?? '');
+      if (event === undefined) throw new HttpError(404, 'event-not-found', 'Event not found.');
+      if (event.snapshot === undefined || deps.snapshotsDir === undefined) {
+        throw new HttpError(404, 'snapshot-not-found', 'This event has no saved snapshot.');
+      }
+      const path = resolveSnapshotPath(deps.snapshotsDir, event.snapshot);
+      if (path === undefined) throw new HttpError(400, 'invalid-snapshot-path', 'The stored snapshot path is invalid.');
+      const jpeg = await readFile(path).catch(() => undefined);
+      if (jpeg === undefined) throw new HttpError(404, 'snapshot-missing', 'The snapshot file is no longer on disk.');
+      sendBuffer(context.res, 200, jpeg, 'image/jpeg', { 'Cache-Control': 'private, max-age=300' });
+    },
+    { auth: 'optional' },
   );
 
   // -- recordings ------------------------------------------------------------

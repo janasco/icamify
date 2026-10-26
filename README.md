@@ -5,17 +5,20 @@ pixel motion, local AI (CodeProject.AI / DeepStack / LPR), ONVIF PTZ and tiered
 retention. An architectural counterpart to Agent DVR / iSpy, built as one Node.js
 process plus a zero-plugin HTML5 console.
 
-**Status: Phase 3 complete — the NVR records and reacts to motion.** The server
-boots from validated configuration, authenticates users, serves the Vue console,
+**Status: Phase 4 complete — the NVR understands what it sees.** The server boots
+from validated configuration, authenticates users, serves the Vue console,
 streams cameras over fragmented MP4 (MSE) with an MJPEG fallback, records every
-configured camera direct-to-disk, runs a pixel motion engine on the sub-stream
-with a paintable zone matrix, and answers clip playback from a SQLite index. The
-console shows live motion boxes, per-tile recorder state, a zone editor and a
-recordings drawer with inline playback.
+configured camera direct-to-disk, runs a pixel motion engine on the sub-stream,
+sends motion frames to a local AI detector (CodeProject.AI, DeepStack, any HTTP
+endpoint or a sandboxed plugin) and executes the configured rules: record clip,
+snapshot, notify, tag the event. The console shows live motion and AI boxes with
+labels, per-tile recorder/AI state, a zone editor, an AI settings panel, a
+recordings drawer and an event log.
 
 WebRTC signaling, SDP validation and session accounting are implemented; the
 WebRTC *media* engine is the one remaining adapter and is reported honestly rather
-than faked. AI, retention enforcement and the visual timeline are Phases 4–5.
+than faked. ONVIF/PTZ control, retention enforcement and the visual timeline are
+Phases 5–6.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
@@ -23,9 +26,10 @@ than faked. AI, retention enforcement and the visual timeline are Phases 4–5.
 | 1b | FFmpeg probe/supervisor, RTSP/RTMP/HTTP/USB/file ingest | ✅ done |
 | 2 | HTTP API + auth, control WS, MSE/MJPEG live view, WebRTC signaling, Vue grid console | ✅ done |
 | 3 | Direct-to-disk recording, pre-buffer ring, pixel motion + zone matrix, recording index + clip playback | ✅ done |
-| 3b | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
-| 4 | AI gateway, rules engine, notifications, ONVIF PTZ | planned |
+| 4 | AI gateway (CodeProject.AI/DeepStack/generic/plugin), label+confidence gating, rules engine, webhook notifications, alert clips | ✅ done |
+| 4b | ONVIF WS-Discovery + PTZ control/patrols, script/PTZ rule actions, email/MQTT/Telegram delivery | not started |
 | 5 | Retention enforcement, archive, visual timeline playback | planned |
+| 6 | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
 
 ## Requirements
 
@@ -64,7 +68,7 @@ npx icamify serve            # http://localhost:8060
 npx icamify probe --camera front-door --stream sub
 npx icamify ingest --camera front-door --purpose record --dry-run
 
-# every check that CI runs (typecheck + console typecheck + 247 tests)
+# every check that CI runs (typecheck + console typecheck + 325 tests)
 npm run check
 ```
 
@@ -109,7 +113,7 @@ packages/core/    config schema engine, types, defaults, validation, masks
 packages/media/   FFmpeg discovery, argv builders, probe, supervisor, snapshots
 packages/stream/  fMP4/MJPEG framing, per-camera live sessions and viewer registry
 packages/motion/  pixel motion engine: background model, zone matrix, blobs, raw-frame splitter
-packages/ai/      AI gateway + provider contracts
+packages/ai/      AI gateway: providers, mapping, bounded concurrency, circuit breaker, rule matching
 packages/onvif/   WS-Discovery + PTZ contracts
 packages/storage/ SQLite recording index (segments + events); retention/archive contracts
 plugins/          hot-loadable AI providers (reference implementation included)
@@ -151,6 +155,19 @@ flows, security model and per-phase exit criteria.
 - **The index is disposable.** Recordings live on disk; SQLite only answers "what
   clips do I have and where are the motion events". A truncated or lost database
   costs a rescan, never footage.
+- **The detector is a replaceable adapter, and it is not on the critical path.**
+  Motion confirmation gates every AI call; a per-camera interval and an in-flight
+  guard stop a slow detector from building a backlog; per-provider concurrency is
+  bounded; three consecutive failures open a circuit for 30 s so a dead service
+  costs nothing instead of one timeout per event. Recording never depends on the
+  detector answering.
+- **Boxes survive cropping.** The detector gets only the motion region when
+  `cropToMotion` is on; its pixel boxes are normalized against the submitted image
+  (SOF parsed, no JPEG decoder) and remapped into full-frame coordinates, so the
+  overlay and the timeline draw them in the right place.
+- **Alerts escalate clips.** A rule firing during a motion episode turns the open
+  window into an alert clip and extends it to `then.record.seconds`, so the clip
+  someone looks for later is the one marked `alert`.
 - **Config fails fast.** Unknown keys, dangling profile/volume/schedule/channel
   references, mismatched zone masks and out-of-bounds layout tiles are startup
   errors with a JSON path; operational hazards are warnings.
@@ -171,8 +188,8 @@ npx icamify ingest --camera <id> --purpose <p>    # run one pipeline (--dry-run/
 npx icamify config validate|print|schema          # configuration commands
 npx icamify user hash                             # argon2id hash from stdin
 
-npm run check              # backend typecheck + console typecheck + 247 tests
-npm test                   # 247 tests: config, media/recorder, motion, storage index, streams, server
+npm run check              # backend typecheck + console typecheck + 325 tests
+npm test                   # 325 tests: config, media/recorder, motion, storage index, streams, AI, rules, server
 npm run web:build          # build the console into apps/web/dist
 npm run web:dev            # Vite dev server proxying /api and /ws to :8060
 npm run config:validate    # validate ./config/icamify.json
@@ -187,15 +204,25 @@ npm run config:schema      # print the JSON Schema
   configuration, not a running purge loop (Phase 5). Today the disk fills.
 - **No visual timeline yet.** Clips are listed newest-first and play inline with
   byte-range seeking; the day-long scrubbing timeline is Phase 5.
-- **Motion has no retention of its own.** Motion events are rows in the index and
-  carry the *analysis-frame* boxes; AI cropping and label filtering arrive with
-  Phase 4.
+- **Detection history is never pruned.** `ai.storeDetectionsDays` and
+  `storage.volumes[].maxAgeHours` are not enforced yet, so event rows and saved
+  snapshots accumulate alongside clips (Phase 5).
+- **Only webhook delivery is implemented.** Email, MQTT and Telegram channels are
+  validated and reported by `/api/rules` as `implemented: false`; a rule that
+  notifies them logs the alert and skips delivery instead of pretending.
+- **Two rule actions are recognised but not executed.** `then.ptz` needs the ONVIF
+  device layer and `then.script` needs an explicit trust model; both are reported
+  as `not implemented` in the rule outcome and warned once at startup.
+- **One detection task per camera.** A provider that declares several
+  capabilities gets the first of `object → face → lpr → scene` (overridable per
+  camera via the AI panel or `/api/cameras/:id/ai`), so a single provider cannot
+  run object and LPR analysis on the same frame.
+- **Snapshot annotation is not burned in.** `then.snapshot.annotate` is accepted;
+  the saved JPEG is clean and the boxes travel with the event instead, which is
+  what the console overlays.
 - **Scheduled recording evaluates windows in UTC.** `system.timezone` is advisory
   and per-schedule timezones are accepted but not converted, so a non-UTC install
   shifts its schedule.
-- **Alert mode is wired but has no trigger source yet.** The recorder accepts
-  `alert` triggers and indexes them; nothing raises one until the AI/rules engine
-  lands (Phase 4).
 - **WebRTC media is not wired.** Signaling, validation and session caps work; an
   engine (intended: `werift` H.264 bridge) must be registered. Until then
   `/api/system` reports WebRTC unavailable with a reason and the console uses MSE.
@@ -204,5 +231,10 @@ npm run config:schema      # print the JSON Schema
   persist locally. Configured layout tiles seed the initial order.
 - **`system.api.basePath` and `corsOrigins`** are not honoured yet (routes are
   `/api`, console is same-origin); startup warns if a custom base path is set.
-- **Verification used a file source** (looping test pattern) with FFmpeg 7.0.2,
-  not physical RTSP/ONVIF hardware; those paths are covered by argv and unit tests.
+- **Verification used a file source** (looping test pattern), a stub detector that
+  validates the multipart JPEG and answers with boxes, and a local webhook
+  receiver — not physical RTSP/ONVIF hardware or a real inference server; those
+  paths are covered by argv, provider-contract and unit tests.
+- **Plugins must be trusted twice.** A plugin directory is only loaded when its
+  manifest `id` is listed in `plugins.trustedPlugins`; untrusted directories are
+  reported at startup and ignored.

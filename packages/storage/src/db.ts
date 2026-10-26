@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
  * rescanning the recording directories.
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS segments (
@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS events (
   peak_percent REAL,
   label        TEXT,
   boxes        TEXT,
+  confidence   REAL,
+  provider_id  TEXT,
+  snapshot     TEXT,
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_camera_time ON events(camera_id, started_at);
@@ -81,9 +84,35 @@ export function openDatabase(options: OpenDatabaseOptions): DatabaseSync {
   db.exec('PRAGMA busy_timeout = 5000;');
   if (options.migrate !== false) {
     db.exec(SCHEMA);
-    db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run('schema_version', String(SCHEMA_VERSION));
+    migrate(db);
   }
   return db;
+}
+
+/**
+ * Additive migration.
+ *
+ * `CREATE TABLE IF NOT EXISTS` leaves an existing v1 database untouched, so new
+ * columns are added explicitly. ADD COLUMN is safe to attempt and cheap to check
+ * first, which keeps the index usable across upgrades without a rebuild.
+ */
+function migrate(db: DatabaseSync): void {
+  ensureColumns(db, 'events', {
+    confidence: 'REAL',
+    provider_id: 'TEXT',
+    snapshot: 'TEXT',
+  });
+  db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run('schema_version', '1');
+  db.prepare('UPDATE meta SET value = ? WHERE key = ?').run(String(SCHEMA_VERSION), 'schema_version');
+}
+
+function ensureColumns(db: DatabaseSync, table: string, columns: Record<string, string>): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+  const existing = new Set(rows.map((row) => row.name));
+  for (const [name, type] of Object.entries(columns)) {
+    if (existing.has(name)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+  }
 }
 
 export function schemaVersion(db: DatabaseSync): number {
