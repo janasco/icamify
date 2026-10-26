@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CORE_VERSION, loadConfig, type ResolvedIcamifyConfig } from '@icamify/core';
@@ -9,8 +10,11 @@ import { Router } from './http/router.ts';
 import { createAppServer, type AppServer, type ListenResult, type RequestLogEntry } from './http/server.ts';
 import { createLiveStreamHandler } from './live/ws-stream.ts';
 import { createLiveSourceFactory } from './media/live-source.ts';
+import { MotionService, type MotionServiceEvent } from './motion/service.ts';
+import { RecordingManager, type RecordingHubEvent } from './recording/manager.ts';
 import { registerRoutes } from './routes/index.ts';
 import { CameraRuntime } from './runtime.ts';
+import { resolveStoragePaths } from './storage-paths.ts';
 import { SignalingService } from './webrtc/signaling.ts';
 import { WsHub } from './ws/hub.ts';
 
@@ -44,6 +48,8 @@ export interface RunningServer {
   runtime: CameraRuntime;
   auth: AuthService;
   signaling: SignalingService;
+  recording: RecordingManager;
+  motion: MotionService;
   config: ResolvedIcamifyConfig;
   toolchain: FfmpegToolchain;
   listen: ListenResult;
@@ -94,7 +100,41 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     },
   });
 
-  const runtime = new CameraRuntime({ config, media, registry, log });
+  // Storage must exist before the index opens: SQLite creates a file, not a tree.
+  const storagePaths = resolveStoragePaths(config);
+  await mkdir(storagePaths.stateDir, { recursive: true });
+  await mkdir(storagePaths.recordingsDir, { recursive: true });
+
+  let pushRecording: ((event: RecordingHubEvent) => void) | undefined;
+  let pushMotion: ((event: MotionServiceEvent) => void) | undefined;
+
+  const recording = new RecordingManager({
+    config,
+    media,
+    indexPath: resolve(storagePaths.stateDir, 'recordings.db'),
+    log,
+    onEvent: (event) => pushRecording?.(event),
+  });
+
+  // Motion is the trigger source for motion-mode recording; the two are wired
+  // through a callback so neither service depends on the other.
+  const motion = new MotionService({
+    config,
+    media,
+    log,
+    onMotionStart: (cameraId, at, detail) =>
+      recording.trigger(cameraId, 'motion', at, { peakPercent: detail.peakPercent, boxes: detail.boxes }),
+    onEvent: (event) => pushMotion?.(event),
+  });
+
+  const runtime = new CameraRuntime({
+    config,
+    media,
+    registry,
+    log,
+    recording,
+    motionStatus: (cameraId) => motion.status(cameraId),
+  });
   const auth = new AuthService({ auth: config.auth, onWarning: (message) => log(`warn: ${message}`) });
   const signaling = new SignalingService({ config, log });
 
@@ -111,6 +151,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime,
     registry,
     signaling,
+    recording,
+    motion,
     version: CORE_VERSION,
     startedAt: runtime.startedAt,
     toolchain,
@@ -143,6 +185,39 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     if (camera !== undefined) hub.broadcastCamera(runtime.view(camera));
   };
 
+  pushRecording = (event: RecordingHubEvent) => {
+    switch (event.type) {
+      case 'recording:segment':
+        hub.broadcast({ type: 'recording:segment', segment: event.segment }, 'cameras');
+        pushStatus?.(event.segment.cameraId);
+        break;
+      case 'recording:event':
+        hub.broadcast({ type: 'recording:event', event: event.event, closed: event.closed }, 'cameras');
+        break;
+      case 'recording:status':
+        // Status changes are reflected in the camera payload, which the UI already
+        // re-renders; broadcasting both would double every update.
+        break;
+    }
+  };
+
+  pushMotion = (event: MotionServiceEvent) => {
+    if (event.type === 'motion:status') return;
+    hub.broadcast(
+      {
+        type: 'motion',
+        cameraId: event.cameraId,
+        active: event.type !== 'motion:end',
+        at: event.at,
+        percent: event.percent,
+        peakPercent: event.peakPercent,
+        boxes: event.boxes,
+      },
+      'cameras',
+    );
+    if (event.type !== 'motion') pushStatus?.(event.cameraId);
+  };
+
   const server = createAppServer({
     config,
     auth,
@@ -161,10 +236,19 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 
   const listen = await server.listen(options.port, options.host);
 
+  // Cameras start after the listener exists: a slow RTSP handshake must not delay
+  // `listen`, and a failing camera must not keep the API from coming up.
+  await recording.start();
+  await motion.start();
+
   // Announce once so an operator sees why a camera stayed dark.
   log(
     `iCamify ${CORE_VERSION} listening on ${listen.url} — ${config.cameras.length} camera(s), ` +
       `ffmpeg ${versionText(toolchain.ffmpeg.version)}, ${staticDir === undefined ? 'API only (console not built)' : `console at ${staticDir}`}`,
+  );
+  log(
+    `recording: ${recording.startedRecorders} camera(s) → ${storagePaths.recordingsDir}; ` +
+      `motion: ${motion.workerCount} camera(s) analysing; index at ${recording.index.path}`,
   );
 
   let closing: Promise<void> | undefined;
@@ -176,6 +260,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         (async () => {
           await hub.close().catch(() => undefined);
           await liveStream.close().catch(() => undefined);
+          await motion.stop().catch(() => undefined);
+          await recording.stop().catch(() => undefined);
+          recording.close();
           await registry.shutdown().catch(() => undefined);
           signaling.shutdown();
           await server.close().catch(() => undefined);
@@ -193,6 +280,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime,
     auth,
     signaling,
+    recording,
+    motion,
     config,
     toolchain,
     listen,

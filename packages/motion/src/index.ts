@@ -1,11 +1,15 @@
-import type { MotionSettings, ZoneGrid } from '@icamify/core';
+import type { MotionSettings } from '@icamify/core';
+import type { ZoneGrid } from '@icamify/core';
+import { PixelMotionEngine } from './engine.ts';
 
 /**
- * Motion detection contracts (Phase 3).
+ * Motion detection.
  *
- * The engine consumes small raw frames (luma, 320x180 by default) produced by
- * the `detect` pipeline, compares them with a background model, applies the zone
+ * The engine consumes small raw frames (luma, 320x180 by default) produced by the
+ * `detect` pipeline, compares them with a background model, applies the zone
  * matrix and emits debounced motion events with bounding boxes for AI cropping.
+ * Everything here is pure computation on typed arrays: no I/O, no FFmpeg, no clock
+ * of its own beyond the frame timestamps the caller supplies.
  */
 
 export interface Frame {
@@ -16,6 +20,8 @@ export interface Frame {
   height: number;
   /** 8-bit luma plane, width x height. */
   luma: Uint8Array;
+  /** RGB24 plane, present only when the pipeline emits colour (colour filters). */
+  rgb?: Uint8Array;
 }
 
 export interface Box {
@@ -33,9 +39,12 @@ export interface MotionDetection {
   motion: boolean;
   /** Share of active zone cells that changed, 0..100. */
   changedPercent: number;
-  /** Active cells that flipped, row-major, 0/1 per cell. */
+  /**
+   * Flipped cells for the UI overlay, row-major, one 0/1 byte per cell.
+   * This array is reused between frames; copy it if you need to retain it.
+   */
   cells: Uint8Array;
-  /** Merged changed regions after min-blob filtering, in source pixels. */
+  /** Merged changed regions after min-blob filtering, in analysis-frame pixels. */
   boxes: Box[];
   /** Union of boxes, used to crop the frame for AI. */
   region?: Box;
@@ -53,7 +62,7 @@ export interface MotionEngine {
   /** Clears the background model, e.g. after a camera reconnect. */
   reset(): void;
   /** Adjusts sensitivity/zones without recreating the engine. */
-  configure(options: MotionEngineOptions): void;
+  configure(options: Partial<MotionEngineOptions>): void;
 }
 
 export interface MotionEvent {
@@ -63,3 +72,20 @@ export interface MotionEvent {
   peakPercent: number;
   boxes: Box[];
 }
+
+/** Convenience factory; the class is exported too for tests and type narrowing. */
+export function createMotionEngine(options: MotionEngineOptions & { cameraId: string }): PixelMotionEngine {
+  return new PixelMotionEngine(options);
+}
+
+export { PixelMotionEngine, type MotionEngineStats } from './engine.ts';
+export {
+  compileZones,
+  compileZonesFromMask,
+  fullFrameZones,
+  hasActiveCells,
+  type CompiledZones,
+} from './grid.ts';
+export { RawFrameReader, type PixelFormat, type RawFrameReaderOptions } from './frame.ts';
+
+export const MOTION_VERSION = '0.1.0';

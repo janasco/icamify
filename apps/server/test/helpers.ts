@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after } from 'node:test';
 import { DEFAULT_CONFIG, type AuthConfig, type CameraConfig, type ResolvedIcamifyConfig, type StreamingConfig } from '@icamify/core';
 import type { FfmpegToolchain } from '@icamify/media';
 import type { LiveRegistry } from '@icamify/stream';
@@ -37,6 +41,22 @@ export interface TestConfigOptions {
   auth?: Partial<AuthConfig>;
   cameras?: CameraConfig[];
   streaming?: Partial<StreamingConfig>;
+  /** Per-test storage root; defaults to the shared temp directory below. */
+  storageRoot?: string;
+}
+
+/**
+ * Tests must never write into the repository: every server gets its own data root
+ * under the OS temp directory, removed when the file finishes.
+ */
+const SHARED_STORAGE_ROOT = mkdtempSync(join(tmpdir(), 'icamify-server-'));
+
+after(() => {
+  rmSync(SHARED_STORAGE_ROOT, { recursive: true, force: true });
+});
+
+export function testStorageRoot(): string {
+  return SHARED_STORAGE_ROOT;
 }
 
 export function testConfig(options: TestConfigOptions = {}): ResolvedIcamifyConfig {
@@ -46,6 +66,7 @@ export function testConfig(options: TestConfigOptions = {}): ResolvedIcamifyConf
   config.streaming = { ...config.streaming, ...options.streaming };
   config.system.api = { ...config.system.api, rateLimit: { windowMs: 1000, max: 10_000 } };
   config.system.web = { ...config.system.web, serveStatic: false };
+  config.storage = { ...config.storage, rootDir: options.storageRoot ?? SHARED_STORAGE_ROOT };
   return config;
 }
 

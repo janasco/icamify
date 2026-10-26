@@ -1,8 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import CameraTile from './CameraTile.vue';
+import ClipsPanel from './ClipsPanel.vue';
+import MotionEditor from './MotionEditor.vue';
 import { api, errorMessage } from '../api';
-import type { AuthMe, CameraList, CameraView, LayoutList, SystemInfo } from '../types';
+import type {
+  AuthMe,
+  CameraList,
+  CameraView,
+  LayoutList,
+  MotionRuntime,
+  MotionStatus,
+  RecordingList,
+  RecordingSegment,
+  SystemInfo,
+} from '../types';
 
 const props = defineProps<{ me: AuthMe }>();
 const emit = defineEmits<{ (event: 'sign-out'): void; (event: 'sign-in'): void }>();
@@ -18,6 +30,16 @@ const order = ref<string[]>(readJson<string[]>('icamify.order', []));
 const focusId = ref<string | null>(readString('icamify.focus'));
 const dragId = ref<string | null>(null);
 const dropId = ref<string | null>(null);
+const motionRuntime = ref<Record<string, MotionRuntime>>({});
+const clipsOpen = ref(false);
+const clips = ref<RecordingSegment[]>([]);
+const clipsTotal = ref(0);
+const clipsLoading = ref(false);
+const clipsError = ref<string | null>(null);
+const newClips = ref(0);
+const editing = ref<CameraView | null>(null);
+
+const canConfigure = computed(() => props.me.user?.role !== 'viewer');
 
 let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
@@ -128,6 +150,27 @@ function connectControl(): void {
     }
     if (message.type === 'camera:status' && typeof message.camera === 'object' && message.camera !== null) {
       applyCamera(message.camera as CameraView);
+      return;
+    }
+    if (message.type === 'motion' && typeof message.cameraId === 'string') {
+      motionRuntime.value = {
+        ...motionRuntime.value,
+        [message.cameraId]: {
+          cameraId: message.cameraId,
+          active: message.active === true,
+          at: typeof message.at === 'number' ? message.at : Date.now(),
+          percent: typeof message.percent === 'number' ? message.percent : 0,
+          ...(typeof message.peakPercent === 'number' ? { peakPercent: message.peakPercent } : {}),
+          ...(Array.isArray(message.boxes) ? { boxes: message.boxes as MotionRuntime['boxes'] } : {}),
+        },
+      };
+      return;
+    }
+    if (message.type === 'recording:segment' && typeof message.segment === 'object' && message.segment !== null) {
+      const segment = message.segment as RecordingSegment;
+      clips.value = [segment, ...clips.value].slice(0, 100);
+      clipsTotal.value += 1;
+      newClips.value += 1;
     }
   };
   next.onclose = () => {
@@ -205,6 +248,39 @@ function setFocus(cameraId: string | null): void {
   focusId.value = focusId.value === cameraId ? null : cameraId;
   persist('icamify.focus', focusId.value ?? '');
 }
+
+function toggleClips(): void {
+  clipsOpen.value = !clipsOpen.value;
+  if (clipsOpen.value) void loadClips();
+}
+
+async function loadClips(): Promise<void> {
+  clipsLoading.value = true;
+  clipsError.value = null;
+  try {
+    const query = new URLSearchParams({ limit: '60', order: 'desc' });
+    if (focusId.value !== null) query.set('cameraId', focusId.value);
+    const list = await api<RecordingList>(`/api/recordings?${query.toString()}`);
+    clips.value = list.segments;
+    clipsTotal.value = list.total;
+    newClips.value = 0;
+  } catch (error) {
+    clipsError.value = errorMessage(error);
+  } finally {
+    clipsLoading.value = false;
+  }
+}
+
+function onMotionSaved(status: MotionStatus): void {
+  const camera = cameras.value.find((candidate) => candidate.id === status.cameraId);
+  if (camera !== undefined) {
+    applyCamera({ ...camera, motion: { ...camera.motion, active: status.motion, sensitivity: status.thresholds.sensitivity } });
+  }
+}
+
+watch(focusId, () => {
+  if (clipsOpen.value) void loadClips();
+});
 
 function railDot(camera: CameraView): string {
   if (!camera.enabled) return '';
@@ -333,6 +409,9 @@ function readString(key: string): string | null {
         </div>
         <span class="spacer"></span>
         <span v-if="system" class="pill mono">{{ system.transports.ladder.join(' → ') }}</span>
+        <button :class="{ primary: clipsOpen }" @click="toggleClips">
+          Clips<span v-if="newClips > 0 && !clipsOpen" class="new-clip-badge">+{{ newClips }}</span>
+        </button>
         <button @click="load" :disabled="loading">{{ loading ? 'Loading…' : 'Refresh' }}</button>
       </div>
 
@@ -361,7 +440,12 @@ function readString(key: string): string | null {
             @dragleave="dropId = dropId === camera.id ? null : dropId"
             @drop="onDrop($event, camera.id)"
           >
-            <CameraTile :camera="camera" />
+            <CameraTile
+              :camera="camera"
+              :motion="motionRuntime[camera.id] ?? null"
+              :can-configure="canConfigure"
+              @configure="editing = camera"
+            />
           </div>
         </div>
       </div>
@@ -369,7 +453,21 @@ function readString(key: string): string | null {
       <div class="footer-note">
         <span>Drag tiles to reorder · double-click a tile for fullscreen</span>
         <span v-if="system">WebRTC: {{ system.transports.webrtc.available ? 'available' : (system.transports.webrtc.reason ?? 'unavailable') }}</span>
+        <span v-if="clipsOpen" class="mono">{{ clipsTotal }} clips</span>
       </div>
     </section>
+
+    <ClipsPanel
+      v-if="clipsOpen"
+      :clips="clips"
+      :cameras="cameras"
+      :loading="clipsLoading"
+      :error="clipsError"
+      :total="clipsTotal"
+      @refresh="loadClips"
+      @close="clipsOpen = false"
+    />
+
+    <MotionEditor v-if="editing" :camera="editing" @close="editing = null" @saved="onMotionSaved" />
   </div>
 </template>

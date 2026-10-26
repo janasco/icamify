@@ -1,4 +1,4 @@
-# iCamify API (Phase 2)
+# iCamify API (Phase 3)
 
 The HTTP API, control WebSocket and the two media endpoints the console uses.
 Everything is served from the same origin as the console, so there is no CORS
@@ -78,12 +78,97 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/cameras/:id/live.mjpeg` | optional | Multipart MJPEG live stream. |
 | WS (upgrade) | `/api/cameras/:id/live.ws` | optional | Fragmented MP4 live stream. |
 | GET | `/api/layouts` | optional | Configured layouts plus camera ordering. |
-| WS (upgrade) | `/ws` | optional | Control channel: status push + WebRTC signaling. |
+| GET | `/api/cameras/:id/motion` | optional | Motion status incl. zone matrix, thresholds, live boxes. |
+| PUT | `/api/cameras/:id/motion` | operator | `{sensitivity?, zones?}`; persists a runtime override. |
+| GET | `/api/cameras/:id/recording` | optional | Recorder status, storage stats and the 10 newest clips. |
+| GET | `/api/recordings` | optional | Clip index, filterable and pageable (see below). |
+| GET | `/api/recordings/:id` | optional | One clip plus the events linked to it. |
+| GET | `/api/recordings/:id/file` | optional | The clip file with `Range` support. |
+| GET | `/api/events` | optional | Motion/AI/rule events from the index. |
+| WS (upgrade) | `/ws` | optional | Control channel: status push + WebRTC signaling + motion/clip events. |
 
-Not implemented yet: recordings/timeline, events, settings writes, ONVIF scan,
-PTZ commands (Phases 3–5). The console links no dead controls for them.
+Not implemented yet: retention/purge writes, ONVIF scan, PTZ commands, settings
+writes beyond motion tuning, and the AI gateway (Phases 4–5). The console links
+no dead controls for them.
 
 ---
+
+## Recordings
+
+`GET /api/recordings?cameraId=front-door&from=…&to=…&limit=50&order=desc`
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `cameraId` | Filter to one camera. |
+| `from` / `to` | Epoch milliseconds or ISO timestamps; `from` inclusive, `to` exclusive, matched against segment start. |
+| `reason` | `continuous`, `motion`, `alert`, `scheduled`, `manual`. |
+| `hasMotion` / `hasAlert` | `true`/`false`. |
+| `limit` / `offset` | Page size (default 100, max 500) and offset. |
+| `order` | `desc` (newest first, default) or `asc` for timeline playback. |
+
+```json
+{
+  "segments": [
+    {"id":"6f1c…","cameraId":"front-door","volumeId":"default",
+     "path":"/data/recordings/front-door/20261026/054901-motion.mkv",
+     "startedAt":1793000941000,"endedAt":1793000945000,"bytes":600291,
+     "reason":"motion","hasMotion":true,"hasAlert":false,"eventIds":["evt_…"]}
+  ],
+  "total": 1,
+  "stats": {"segments": 1, "bytes": 600291, "oldestAt":1793000941000, "newestAt":1793000945000},
+  "request": { "cameraId": "front-door", "limit": 50, "order": "desc" }
+}
+```
+
+**A segment is one file on disk.** Motion clips are made of several segments linked
+to the same event; there is no "clip" object that has to be re-muxed. The path is
+where the bytes are; the timestamps are what the timeline should draw.
+
+`GET /api/recordings/:id/file` serves the file with `Accept-Ranges: bytes`:
+
+- no `Range` header → `200` + `Content-Length`;
+- `Range: bytes=0-255` → `206` with `Content-Range: bytes 0-255/624376`;
+- unsatisfiable range → `416` with `Content-Range: bytes */<size>`;
+- the file was deleted (retention, manual cleanup) → `410 recording-missing`.
+
+`Content-Type` follows the container: `video/x-matroska`, `video/mp4`,
+`video/webm` or `video/mp2t`. Auth is the normal viewer requirement, so a
+`<video src>` works because the session cookie is sent with the request.
+
+## Motion tuning
+
+`GET /api/cameras/:id/motion` returns the worker state even when motion is disabled
+or the pipeline failed, because the zones and thresholds are what an operator needs
+to fix it:
+
+```json
+{
+  "cameraId": "front-door", "enabled": true, "running": true, "state": "running",
+  "analysis": {"width":320,"height":180,"fps":5,"pixelFormat":"gray"},
+  "thresholds": {"threshold":34,"percentThreshold":2.62,"sensitivity":50,"derivedFromSensitivity":true},
+  "zones": {"cols":16,"rows":16,"mode":"include","cells":[[true,…],…]},
+  "activeCells": 256, "totalCells": 256,
+  "motion": true, "lastPercent": 18.75, "peakPercent": 27.73,
+  "lastMotionAt": 1793000942600, "boxes": [{"x":0.05,"y":0.12,"width":0.4,"height":0.5,"normalized":true}],
+  "frames": 812, "analysed": 790
+}
+```
+
+`PUT /api/cameras/:id/motion` (operator) accepts:
+
+```json
+{"sensitivity": 80, "zones": {"cols": 16, "rows": 16, "mode": "exclude", "cells": [[false,…],…]}}
+```
+
+`cells` may be a boolean matrix or the compact `"0110/…"` string used by the
+config file. `mode: include` monitors the selected cells; `mode: exclude` ignores
+them. A matrix that monitors nothing is rejected (`400 invalid-motion-settings`).
+
+The override is written to `<storage.stateDir>/motion-overrides.json` and applied
+after the config at boot, so tuning survives a restart while `icamify.json` stays
+the as-shipped source of truth. Setting `sensitivity` re-derives the thresholds,
+which means explicit `threshold`/`percentThreshold` values in the config stop
+applying for that camera (the response reports `derivedFromSensitivity`).
 
 ## MSE media socket
 
@@ -145,7 +230,10 @@ that stop reading are dropped at 4 MiB of queued data.
 | ---- | ---- |
 | `welcome` | On connect. Contains user (or `null`), server version/uptime, the camera snapshot, subscribed topics. |
 | `cameras` | Full camera list (after `subscribe`). |
-| `camera:status` | One camera changed state (viewers, pipeline, errors). |
+| `camera:status` | One camera changed state (viewers, pipeline, errors, recorder state). |
+| `motion` | `{cameraId, active, at, percent, peakPercent, boxes[]}` — episode start/end plus at most one update per second while active; boxes are 0..1 image coordinates. |
+| `recording:segment` | `{segment}` — a clip was finalized and indexed; the same object as in `GET /api/recordings`. |
+| `recording:event` | `{event, closed}` — a motion/rule episode opened or closed. |
 | `subscribed` | Acknowledges `subscribe`/`unsubscribe` with the current topics. |
 | `pong` | Answer to `ping`, echoing `t`. |
 | `webrtc:answer` | `{sessionId, cameraId, sdp}` for an accepted offer. |

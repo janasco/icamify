@@ -22,7 +22,13 @@ export function resolveProfileForPurpose(
   camera: CameraConfig,
   purpose: PipelinePurpose,
 ): ResolvedProfile {
-  const explicit = camera.profiles?.[purpose];
+  // `recording.profile` is the recording-specific override; `profiles.record` is
+  // the camera-wide one. Both beat the global default so an operator who tunes
+  // "record" on the recording block gets what they asked for.
+  const explicit =
+    purpose === 'record'
+      ? (camera.recording?.profile ?? camera.profiles?.record)
+      : camera.profiles?.[purpose];
   const fallback = config.streaming.defaults?.[purpose];
   const name = explicit ?? fallback;
   if (name === undefined) {
@@ -52,8 +58,8 @@ export function selectSource(camera: CameraConfig, purpose: PipelinePurpose): St
 export interface PipelinePlanOptions {
   /** strftime template for recording; defaults to the storage layout. */
   outputTemplate?: string;
-  /** Motion analysis frame size (ignored for live/record). */
-  detect?: { width: number; height: number; fps: number };
+  /** Motion analysis frame size and colour mode (ignored for live/record). */
+  detect?: { width: number; height: number; fps: number; grayscale?: boolean };
   ffmpegMajor?: number;
   hasEncoder?: (name: string) => boolean;
   segmentSeconds?: number;
@@ -136,6 +142,7 @@ export function buildPipelinePlan(
           Math.max(1, Math.round(1000 / (camera.motion?.intervalMs ?? config.motion.intervalMs ?? 500))),
         width: options.detect?.width ?? 320,
         height: options.detect?.height ?? 240,
+        ...(options.detect?.grayscale === undefined ? {} : { grayscale: options.detect.grayscale }),
       });
       break;
   }

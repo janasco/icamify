@@ -13,6 +13,8 @@
   "dependencies": {
     "@icamify/core": "*",
     "@icamify/media": "*",
+    "@icamify/motion": "*",
+    "@icamify/storage": "*",
     "@icamify/stream": "*",
     "hash-wasm": "^4.12.0",
     "ws": "^8.22.0"

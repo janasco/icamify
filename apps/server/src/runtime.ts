@@ -2,6 +2,8 @@ import type { CameraConfig, ResolvedIcamifyConfig, StreamSource } from '@icamify
 import { MediaError, MediaEngine, maskUrl, redactArgv } from '@icamify/media';
 import { HttpError } from './http/responses.ts';
 import type { LiveRegistry, LiveSessionStats, TransportAvailability } from '@icamify/stream';
+import type { MotionStatusView } from './motion/service.ts';
+import type { RecordingManager } from './recording/manager.ts';
 
 /**
  * Camera-facing read model for the API.
@@ -36,8 +38,26 @@ export interface CameraView {
   groupIds: string[];
   tags: string[];
   profiles: { record?: string; live?: string; detect?: string };
-  recording: { mode: string; enabled: boolean; segmentMinutes?: number };
-  motion: { enabled: boolean };
+  recording: {
+    mode: string;
+    enabled: boolean;
+    segmentMinutes?: number;
+    /** Live recorder state, when a recorder exists for this camera. */
+    state?: string;
+    directToDisk?: boolean;
+    eventActive?: boolean;
+    bufferedSeconds?: number;
+    adoptedSegments?: number;
+    lastError?: string;
+  };
+  motion: {
+    enabled: boolean;
+    active?: boolean;
+    sensitivity?: number;
+    lastPercent?: number;
+    lastMotionAt?: number;
+    lastError?: string;
+  };
   ai: { enabled: boolean; providerId?: string; labels: string[] };
   ptz: { supported: boolean };
   hasSubStream: boolean;
@@ -61,6 +81,8 @@ export interface CameraRuntimeOptions {
   media: MediaEngine;
   registry: LiveRegistry;
   toolchain?: { ffmpegVersion: string };
+  recording?: RecordingManager;
+  motionStatus?: (cameraId: string) => MotionStatusView | undefined;
   log?: (line: string) => void;
 }
 
@@ -90,6 +112,19 @@ export class CameraRuntime {
 
   view(camera: CameraConfig): CameraView {
     const sessions = this.options.registry.statsFor(camera.id);
+    const recorder = this.options.recording?.status(camera.id);
+    const recorderFields =
+      recorder === undefined
+        ? {}
+        : {
+            state: recorder.state,
+            directToDisk: recorder.directToDisk,
+            eventActive: recorder.eventActive,
+            bufferedSeconds: recorder.bufferedSeconds,
+            adoptedSegments: recorder.adoptedSegments,
+            ...(recorder.lastError === undefined ? {} : { lastError: recorder.lastError }),
+          };
+    const motion = this.options.motionStatus?.(camera.id);
     const lastError = this.errors.get(camera.id) ?? sessions.find((session) => session.lastError !== undefined)?.lastError;
     const state: CameraStatusView['state'] =
       sessions.some((session) => session.state === 'restarting')
@@ -115,8 +150,20 @@ export class CameraRuntime {
         mode: camera.recording?.mode ?? 'off',
         enabled: camera.recording?.enabled !== false && (camera.recording?.mode ?? 'off') !== 'off',
         ...(camera.recording?.segmentMinutes === undefined ? {} : { segmentMinutes: camera.recording.segmentMinutes }),
+        ...recorderFields,
       },
-      motion: { enabled: camera.motion?.enabled === true },
+      motion: {
+        enabled: camera.motion?.enabled === true,
+        ...(motion === undefined
+          ? {}
+          : {
+              active: motion.motion,
+              sensitivity: motion.thresholds.sensitivity,
+              lastPercent: motion.lastPercent,
+              ...(motion.lastMotionAt === undefined ? {} : { lastMotionAt: motion.lastMotionAt }),
+              ...(motion.lastError === undefined ? {} : { lastError: motion.lastError }),
+            }),
+      },
       ai: {
         enabled: camera.ai?.enabled === true,
         ...(camera.ai?.providerId === undefined ? {} : { providerId: camera.ai.providerId }),

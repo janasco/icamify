@@ -1,44 +1,84 @@
-# @icamify/storage — recordings, quotas and retention
+# @icamify/storage — recording index, quotas and retention
 
-**Phase:** 5.
+**Phase:** 3 (index implemented) · 5 (retention/archive).
 
-## Planned layout
+The filesystem is the source of truth; SQLite only answers "which clips exist, what
+happened in them, and where are they". A lost or truncated database costs a rescan,
+never footage.
+
+## Implemented
 
 ```
 src/
-  paths.ts         # filenameTemplate expansion, volume resolution per camera
-  index-db.ts      # SQLite (node:sqlite) schema + queries for segments/events
-  reconcile.ts     # disk <-> index reconciliation on boot and after crashes
-  quota.ts         # size/age accounting per volume and per camera
-  retention.ts     # purge loop (age -> size -> disk floor), batching, dry run
-  archive/
-    local.ts       # move to a second mount
-    s3.ts          # SigV4 PUT, multipart for big segments
-    sftp.ts        # key or password auth
-  lock.ts          # single-writer lock so two purge loops cannot race
+  db.ts          # node:sqlite connection, pragmas (WAL), schema + versioning
+  recordings.ts  # RecordingIndex: segments, events, links, stats, tombstones
+  index.ts       # public contracts
 ```
 
-## Retention order
+Node 24's built-in `node:sqlite` means the index adds no dependency.
 
-1. **Disk floor** — if free space < `minFreeDiskGb`, delete oldest unprotected
-   segments until the floor is restored (this always wins over age/size).
-2. **Age** — delete segments older than `maxAgeHours`.
-3. **Size** — while `usedBytes > maxSizeGb`, delete according to `strategy`
-   (`oldest-first`, `largest-first`, `lowest-priority-first`), oldest event first.
-4. **Archive** — before deletion, if the volume has an enabled archive provider,
-   upload segments older than `afterHours`; delete locally after
-   `keepLocalDays` once verified.
+### Schema
 
-Every deletion is logged with path, size and reason, and emitted as a
-`storage.purge` event so the UI can show a toast and the rules engine can fire
-`storage.warning` / `storage.critical`.
+```sql
+segments(id, camera_id, volume_id, path UNIQUE, started_at, ended_at, bytes,
+         reason, has_motion, has_alert, protected, event_id, deleted_at, created_at)
+events(id, camera_id, kind, started_at, ended_at, peak_percent, label, boxes, created_at)
+segment_events(segment_id, event_id)          -- one clip can belong to several events
+meta(key, value)                              -- schema_version
+```
 
-## Safety
+Indexes cover `(camera_id, started_at)`, `started_at` and
+`(deleted_at, started_at)` — the three shapes the timeline and the purge loop use.
 
-- Only paths that resolve inside a configured volume are ever deleted (path
-  traversal guard, symlinks resolved and rejected).
-- Files newer than 60 seconds are skipped by purgers to avoid deleting the
-  segment currently being written.
-- `purge.dryRun` logs intended deletions without touching disk.
-- Retention never deletes `protected` segments or segments linked to an open
-  alert when `protectFlagged` is true.
+### API
+
+```ts
+const index = new RecordingIndex({ path: '<stateDir>/recordings.db' });
+
+index.insertSegment({ cameraId, volumeId, path, startedAt, endedAt, bytes, reason, eventId });
+index.listSegments({ cameraId, from, to, reason, hasMotion, limit, offset, order: 'asc' });
+index.stats({ cameraId });              // count, bytes, oldest, newest
+index.markDeletedBefore(cutoff);        // tombstones + returns the row count
+index.insertEvent({ cameraId, kind: 'motion', startedAt, peakPercent, boxes });
+index.updateEvent(id, { endedAt });     // closes the episode
+index.pruneEvents(cutoff);
+```
+
+Behaviour worth knowing:
+
+- **Re-indexing is idempotent.** `insertSegment` upserts on `path`, so a restart or
+  a rescan cannot duplicate a clip.
+- **Deletion is a tombstone.** `deleted_at` hides a row from every query without
+  losing the audit trail; `includeDeleted` exposes it.
+- **Protected clips are never purged.** `markDeletedBefore()` skips
+  `protected = 1`, which is what a starred clip becomes.
+- **Timestamps are epoch milliseconds** and are the only ordering. File names are
+  local-time strings for humans; the index never parses them for truth.
+
+## Planned (Phase 5)
+
+```
+reconcile.ts   # disk <-> index reconciliation on boot and after crashes
+quota.ts       # size/age accounting per volume and per camera
+retention.ts   # purge loop (age -> size -> disk floor), batching, dry run
+archive/       # local, S3 (SigV4) and SFTP targets
+lock.ts        # single-writer lock so two purge loops cannot race
+```
+
+Retention order:
+
+1. **Disk floor** — free space below `minFreeDiskGb` deletes oldest unprotected
+   clips first (this wins over age/size).
+2. **Age** — `maxAgeHours`.
+3. **Size** — while over `maxSizeGb`, delete per `strategy` (`oldest-first`,
+   `largest-first`, `lowest-priority-first`).
+4. **Archive** — upload before deletion when a provider is configured, delete
+   locally only after verification.
+
+Safety rules for the purge loop: only paths inside a configured volume are ever
+deleted (resolved, traversal- and symlink-checked), files younger than 60 s are
+skipped, `purge.dryRun` only logs, and open alerts are protected when
+`protectFlagged` is true.
+
+**Until Phase 5 ships, nothing purges.** Clip files accumulate under the recordings
+tree and the disk will fill.

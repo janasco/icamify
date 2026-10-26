@@ -4,8 +4,9 @@ The only process iCamify runs. It loads and validates the configuration, starts
 the media engines on demand, serves the API and console, and brokers WebRTC
 signaling.
 
-**Phase:** 1 (CLI, config, diagnostics), 2 (HTTP/WS/live view/signaling), 3–5
-(recording wiring, motion/AI, retention).
+**Phase:** 1 (CLI, config, diagnostics), 2 (HTTP/WS/live view/signaling),
+3 (recording, pre-buffer, motion, clip playback). AI/PTZ (4) and retention/timeline
+(5) are still to come.
 
 ```bash
 npx icamify serve --config config/icamify.json   # the normal way to run iCamify
@@ -45,14 +46,34 @@ src/
     signaling.ts             SDP validation, sessions, ICE forwarding, engine seam
   media/
     live-source.ts           LiveSource → MediaEngine supervisor bridge
+  motion/service.ts          detect pipelines, motion episodes, zone/sensitivity API
+  recording/manager.ts       recorders ↔ index ↔ WebSocket events
+  storage-paths.ts           rootDir/stateDir/recordingsDir resolution
   routes/index.ts            route table, roles, anonymous-viewing rule
 test/
   auth.test.ts               13 tests: hashes, sessions, revocation, TTL, lockout, tokens
   http.test.ts               17 tests: routes, roles, CSRF, static, control socket
   streams.test.ts             4 tests: MSE framing, MJPEG parts, auth rejection
   signaling.test.ts           9 tests: SDP validation, sessions, caps, failures
+  recording.test.ts           7 tests: adoption, motion events, range playback, zone API
   helpers.ts                 fixtures: stub toolchain, ephemeral server, WS clients
 ```
+
+## Recording and motion
+
+A recording camera gets one long-lived `copy` FFmpeg process that writes segments
+into `<recordings>/<camera>/.hot`. `CameraRecorder` adopts (renames) segments into
+the recordings tree and the `RecordingIndex` rows are written here — the recorder
+knows nothing about SQLite and the index knows nothing about FFmpeg.
+
+`MotionService` runs one `detect` pipeline per motion-enabled camera, feeds raw
+luma into `@icamify/motion`, and calls back into the manager when an episode starts
+(and once a second while it lasts, so the recorder's window stays open). It also
+owns the zone/sensitivity overrides persisted to `<stateDir>/motion-overrides.json`.
+
+Both services start **after** the HTTP listener exists: a camera that cannot be
+reached must never delay the API, and a slow RTSP handshake must not look like a
+hung process.
 
 ## Routes
 
@@ -65,8 +86,10 @@ Full reference: [docs/api.md](../../docs/api.md).
 | System | `GET /api/system`, `GET /api/system/config` (admin), `GET /api/webrtc` |
 | Cameras | `GET /api/cameras`, `GET /api/cameras/:id`, `snapshot.jpg`, `live-argv` (operator) |
 | Live | `GET /api/cameras/:id/live.mjpeg`, `WS /api/cameras/:id/live.ws` |
+| Motion | `GET`/`PUT /api/cameras/:id/motion` (PUT: operator) |
+| Recordings | `GET /api/recordings`, `/api/recordings/:id`, `/api/recordings/:id/file` (Range), `/api/cameras/:id/recording`, `GET /api/events` |
 | Dashboards | `GET /api/layouts` |
-| Control | `WS /ws` (status push + WebRTC signaling) |
+| Control | `WS /ws` (status push, motion, recording events, WebRTC signaling) |
 
 ## Operational rules
 
@@ -85,8 +108,10 @@ Full reference: [docs/api.md](../../docs/api.md).
 
 ## Not implemented yet
 
-Recordings/timeline and events (Phase 3), motion + AI wiring (Phase 3–4), ONVIF
-discovery/PTZ and notifications (Phase 4), retention and archive (Phase 5), and a
-WebRTC media engine (signaling is ready; the engine seam is empty by design).
-Custom `system.api.basePath` values and `corsOrigins` are not honoured yet —
-routes are always under `/api` and the console is same-origin.
+AI providers and the rules/notification engine (Phase 4), ONVIF discovery and PTZ
+(Phase 4), retention/quota enforcement and archive (Phase 5), the visual timeline
+(Phase 5), and a WebRTC media engine (signaling is ready; the engine seam is empty
+by design). Clip deletion is an index tombstone today: nothing purges files yet, so
+recordings grow until Phase 5 lands. `scheduled` recording evaluates windows in UTC.
+Custom `system.api.basePath` values and `corsOrigins` are not honoured yet — routes
+are always under `/api` and the console is same-origin.

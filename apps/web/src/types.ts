@@ -37,8 +37,25 @@ export interface CameraView {
   groupIds: string[];
   tags: string[];
   profiles: { record?: string; live?: string; detect?: string };
-  recording: { mode: string; enabled: boolean; segmentMinutes?: number };
-  motion: { enabled: boolean };
+  recording: {
+    mode: string;
+    enabled: boolean;
+    segmentMinutes?: number;
+    state?: string;
+    directToDisk?: boolean;
+    eventActive?: boolean;
+    bufferedSeconds?: number;
+    adoptedSegments?: number;
+    lastError?: string;
+  };
+  motion: {
+    enabled: boolean;
+    active?: boolean;
+    sensitivity?: number;
+    lastPercent?: number;
+    lastMotionAt?: number;
+    lastError?: string;
+  };
   ai: { enabled: boolean; providerId?: string; labels: string[] };
   ptz: { supported: boolean };
   hasSubStream: boolean;
@@ -109,4 +126,89 @@ export interface LayoutList {
   layouts: LayoutConfig[];
   defaultLayoutId?: string;
   cameras: Array<{ id: string; name: string; order: number }>;
+}
+
+/** Detection boxes in 0..1 image coordinates, as pushed over the control socket. */
+export interface NormalizedBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  normalized?: true;
+}
+
+/** Live motion episode for a camera (WebSocket `motion` message). */
+export interface MotionRuntime {
+  cameraId: string;
+  active: boolean;
+  at: number;
+  percent: number;
+  peakPercent?: number;
+  boxes?: NormalizedBox[];
+}
+
+export interface MotionStatus {
+  cameraId: string;
+  enabled: boolean;
+  running: boolean;
+  state: 'idle' | 'starting' | 'running' | 'stalled' | 'error';
+  analysis: { width: number; height: number; fps: number; pixelFormat: 'gray' | 'rgb24' };
+  settings: {
+    sensitivity: number;
+    intervalMs: number;
+    postMotionSeconds: number;
+    minBlobPercent: number;
+    denoise: number;
+    blurRadius: number;
+    colorFilter: boolean;
+  };
+  thresholds: { threshold: number; percentThreshold: number; sensitivity: number; derivedFromSensitivity: boolean };
+  zones: { cols: number; rows: number; mode: 'include' | 'exclude'; cells: boolean[][] };
+  activeCells: number;
+  totalCells: number;
+  motion: boolean;
+  lastPercent: number;
+  peakPercent: number;
+  lastMotionAt?: number;
+  lastFrameAt?: number;
+  frames: number;
+  analysed: number;
+  boxes: NormalizedBox[];
+  lastError?: string;
+}
+
+export interface RecordingSegment {
+  id: string;
+  cameraId: string;
+  volumeId: string;
+  path: string;
+  startedAt: number;
+  endedAt: number;
+  bytes: number;
+  reason: 'continuous' | 'motion' | 'alert' | 'scheduled' | 'manual';
+  hasMotion: boolean;
+  hasAlert: boolean;
+  eventIds: string[];
+  protected?: boolean;
+}
+
+export interface RecordedEvent {
+  id: string;
+  cameraId: string;
+  kind: string;
+  startedAt: number;
+  endedAt?: number;
+  peakPercent?: number;
+  label?: string;
+}
+
+export interface RecordingList {
+  segments: RecordingSegment[];
+  total: number;
+  stats: { segments: number; bytes: number; oldestAt?: number; newestAt?: number };
+}
+
+export interface MotionResponse {
+  cameraId: string;
+  motion: MotionStatus | null;
 }

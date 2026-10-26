@@ -125,7 +125,7 @@ icamify/
 │   │   ├── src/index.ts             ✅
 │   │   └── test/config.test.ts      ✅ 28 tests (load, schema, env, semantics, masks, redaction)
 │   │
-│   ├── media/                       ✅ FFmpeg pipeline (1b done, recording in Phase 3)
+│   ├── media/                       ✅ FFmpeg pipeline + direct-to-disk recorder
 │   │   ├── README.md                ✅ layout, invariants, shutdown policy
 │   │   ├── src/errors.ts            ✅ MediaError taxonomy
 │   │   ├── src/types.ts             ✅ MediaPipeline, StreamProbe, probe/snapshot options
@@ -139,7 +139,12 @@ icamify/
 │   │   │   ├── source.ts            ✅ StreamSource → demuxer args, credential injection
 │   │   │   ├── probe.ts             ✅ ffprobe JSON → StreamProbe
 │   │   │   └── supervisor.ts        ✅ per-camera state machine, backoff, health events
-│   │   └── test/                    ✅ 61 tests (argv, toolchain, plans, supervisor, processes)
+│   │   ├── src/record/
+│   │   │   ├── paths.ts             ✅ hot dir / dated tree / local-time file names
+│   │   │   ├── watcher.ts           ✅ segment-completion detection (newer file or stale mtime)
+│   │   │   ├── prebuffer.ts         ✅ segment ring: adopt or expire
+│   │   │   └── recorder.ts          ✅ modes, trigger windows, adopt/drop, status
+│   │   └── test/                    ✅ 96 tests (argv, toolchain, plans, supervisor, processes, watcher, recorder)
 │   │
 │   ├── stream/                      ✅ live fan-out (fMP4/MJPEG sessions)
 │   │   ├── README.md                ✅ invariants + measured behaviour
@@ -149,9 +154,13 @@ icamify/
 │   │   ├── src/live/registry.ts     ✅ global caps, transport availability
 │   │   └── test/                    ✅ 30 tests (no FFmpeg needed)
 │   │
-│   ├── motion/                      📐 pixel motion engine (Phase 3)
-│   │   ├── README.md                ✅ algorithm, planned files, invariants
-│   │   └── src/index.ts             📐 MotionEngine, MotionDetection, Frame, Box
+│   ├── motion/                      ✅ pixel motion engine
+│   │   ├── README.md                ✅ algorithm, zone semantics, invariants
+│   │   ├── src/engine.ts            ✅ background model, blobs, hangover
+│   │   ├── src/grid.ts              ✅ zone matrix compilation
+│   │   ├── src/frame.ts             ✅ rawvideo splitter (gray/rgb24)
+│   │   ├── src/index.ts             ✅ contracts + factory
+│   │   └── test/                    ✅ 18 tests (engine, frames, zones)
 │   │
 │   ├── ai/                          📐 AI gateway (Phase 4)
 │   │   ├── README.md                ✅ provider parity matrix, rules of engagement
@@ -161,9 +170,12 @@ icamify/
 │   │   ├── README.md                ✅ scope + security behaviour
 │   │   └── src/index.ts             📐 OnvifScanner, OnvifDeviceClient, PtzClient
 │   │
-│   └── storage/                     📐 retention + archive (Phase 5)
-│       ├── README.md                ✅ retention order, safety rules, planned files
-│       └── src/index.ts             📐 RetentionManager, RecordingSegment, VolumeStats
+│   └── storage/                     ✅ recording index · 📐 retention (Phase 5)
+│       ├── README.md                ✅ schema, API, retention order
+│       ├── src/db.ts                ✅ node:sqlite connection, WAL, schema
+│       ├── src/recordings.ts        ✅ segments, events, links, stats, tombstones
+│       ├── src/index.ts             ✅ contracts (RetentionManager still a seam)
+│       └── test/                    ✅ 15 tests (index, queries, pruning)
 │
 ├── plugins/
 │   └── example-ai-provider/          ✅ reference hot-loadable AI provider
@@ -192,11 +204,11 @@ seams between phases, so each can be implemented and tested in isolation.
 | Package | Public contract | Consumes | Produces |
 | ------- | --------------- | -------- | -------- |
 | `@icamify/core` | `loadConfig`, `IcamifyConfig`, `ZoneGrid`, `redactConfig` | `icamify.json`, env | typed, validated config |
-| `@icamify/media` | `MediaPipeline`, `PreBuffer`, `StreamProbe` | `StreamSource`, `StreamProfile` | FFmpeg processes, segments, live frames |
-| `@icamify/motion` | `MotionEngine.analyze(Frame)` | detect frames, `MotionSettings`, `ZoneGrid` | `MotionDetection` (boxes, percent, cells) |
+| `@icamify/media` | `MediaPipeline`, `CameraRecorder`, `SegmentWindow`, `StreamProbe` | `StreamSource`, `StreamProfile` | FFmpeg processes, adopted segments, live frames |
+| `@icamify/motion` | `MotionEngine.analyze(Frame)`, `RawFrameReader`, `compileZones` | detect frames, `MotionSettings`, `ZoneGrid` | `MotionDetection` (boxes, percent, cells) |
 | `@icamify/ai` | `AiGateway.detect(providerId, request)` | JPEG crops, provider config | `Detection[]` |
 | `@icamify/onvif` | `OnvifScanner`, `PtzClient` | network, credentials | devices, presets, move commands |
-| `@icamify/storage` | `RetentionManager`, `RecordingSegment` | finalized files, quotas | index, deletions, archive uploads |
+| `@icamify/storage` | `RecordingIndex`, `RetentionManager` | finalized files, quotas | clip/event rows, tombstones (deletion in Phase 5) |
 | `@icamify/stream` | `LiveSession`, `LiveRegistry`, `LiveSource` | FFmpeg stdout, config limits | fMP4 init/fragments, MJPEG frames, viewer stats |
 | `@icamify/server` | HTTP + WS + WebRTC signaling | all of the above | browser console |
 
@@ -250,27 +262,45 @@ player tile ── WS /ws (session cookie or bearer) ──> webrtc:offer ──
   browser knows the codec before creating its `SourceBuffer`; a pipeline restart
   re-sends `stream:init` and clients rebuild the source buffer.
 
-### 5.3 Motion → pre-buffer → recording → AI → rules
+### 5.3 Motion → pre-buffer → recording (implemented)
 
 ```
-detect frame ──> MotionEngine
-   motion=true ──► open MotionEvent, timestamp
-                   ├─ drain PreBuffer(last preBufferSeconds) → segment head
-                   ├─ start/continue record job             → segment tail
-                   ├─ crop region → AiGateway.detect()      → Detection[]
-                   └─ publish event on the bus
-                                   │
-                          rules engine (priority order)
-                                   ├─ record.seconds  → extend clip
-                                   ├─ snapshot        → annotated JPEG
-                                   ├─ notify          → channel adapters
-                                   ├─ ptz             → goto preset
-                                   └─ script          → sandboxed exec
+CameraRecorder (mode != off), always running, -c copy:
+  ffmpeg ──> <recordings>/<camera>/.hot/%Y%m%d-%H%M%S.mkv   (2–10 s in motion mode)
+                │
+                ▼  SegmentWatcher (poll: newer file, or stale mtime)
+          closed segment
+                ├─ continuous/scheduled+active ─► adopt: rename into <camera>/<date>/<time>-<reason>.mkv
+                ├─ trigger window open ────────► adopt, linked to the open event id
+                └─ otherwise ─────────────────► SegmentWindow (ring); expire+delete when it slides
+
+MotionService, one detect pipeline per camera:
+  raw luma 320×180 ──► PixelMotionEngine ──► episode start ──► RecordingManager.trigger('motion')
+                                          └─ every second while active ──► trigger again (extends window)
 ```
 
-Rules are evaluated only for events they subscribe to (`when.events` +
-`when.cameraIds` + schedule + AI label/confidence). Cooldowns are per rule and
-per camera, so a busy driveway cannot spam a webhook.
+Why a segment ring rather than a memory pre-buffer: the encoder must never restart
+for a trigger (that would lose exactly the seconds before it and pay connect
+latency each time), and a 5-second 4K remux is hundreds of megabytes, so holding it
+in RAM is not an option. Whole segments in a hot directory cost disk, and adopting
+one is a `rename` inside the same volume.
+
+Consequences handled in code:
+
+- A trigger window opens at `now − preBufferSeconds` and closes at
+  `lastTrigger + postRollSeconds`. Buffered segments overlapping the window are
+  adopted immediately, which is how pre-roll reaches the clip.
+- While motion continues, the motion service calls back once per second; the
+  recorder extends the window without creating a second event.
+- On shutdown the watcher flushes the in-flight file (FFmpeg exit closes it),
+  then buffered segments that never triggered are deleted rather than leaked.
+- On start, anything left in `.hot` is deleted: it was never indexed, so it could
+  never be played back.
+
+Episode/event bookkeeping: `RecordingManager` writes the `events` row when a window
+opens (peak percent and boxes attached), links every adopted segment, and closes the
+row on release. The AI crop step (`AiGateway.detect()`) and the rules engine hang
+off the same events in Phase 4.
 
 ### 5.4 Retention
 
@@ -347,7 +377,7 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | **1b — Media bring-up** | `ffmpeg`/`ffprobe` detection and capability probe, argv builders, process supervisor, RTSP/RTMP/HTTP/USB/file ingest, FFprobe → `StreamProbe`, camera health/backoff, `icamify doctor` | ✅ complete |
 | **2 — Live console** | HTTP API + auth, control WebSocket, WebRTC signaling and session lifecycle, MSE/MJPEG live view, Vue grid console | ✅ complete (media plane for WebRTC pending) |
 | **2b — WebRTC media** | Register a WebRTC media engine (H.264 RTP ↔ ICE/DTLS), resizable tile spans in the grid editor, HLS segmenter | planned |
-| **3 — Recording & motion** | Segmenter + `.part` atomic rename, pre-buffer replay, motion engine + zone editor, timeline index, recording modes (continuous/motion/alert/scheduled) | planned |
+| **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
 | **4 — AI, PTZ, alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, rules engine, notification channels (webhook/email/MQTT/Telegram), ONVIF discovery and PTZ presets/patrol | planned |
 | **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), timeline player with motion/AI markers, storage dashboards | planned |
 
@@ -372,6 +402,12 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   blocking UDP visibly falls back to MSE.
 - **3** — motion clip includes configured pre-roll; zone exclusions suppress a
   swaying tree; continuous recording survives a forced kill with a playable file.
+  *(Verified with FFmpeg 7.0.2 and a looping file source: motion opened an event,
+  pre-buffered segments were adopted with the event id, clips streamed back with a
+  `206` byte range and a real Matroska header, the zone API persisted a half-frame
+  mask, and 16/16 end-to-end checks passed. Zone suppression is covered by unit
+  tests with synthetic frames; a physical camera and a swaying-tree scene are still
+  pending hardware.)*
 - **4** — a person-only rule produces exactly one Telegram alert and one clip;
   LPR labels reach the rule engine with confidence; PTZ preset round-trips.
 - **5** — quotas are enforced within one interval; deleting a volume directory
@@ -383,14 +419,23 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 
 1. **FFmpeg is the only media engine.** No GStreamer, no native decoder
    bindings. The supervisor is replaceable; the argv contract is documented.
-2. **MKV is the default recording container.** It tolerates unclean shutdowns;
+2. **Pre-buffer is a directory ring, not a memory buffer.** Segments are whole files
+   in the same volume as their final home, so a trigger is a rename and the
+   encoder never restarts. Memory pre-buffering was rejected: `preBufferMaxMemoryMb`
+   cannot hold even one 4K segment, and restarting FFmpeg per event loses the
+   footage the feature exists to keep.
+3. **MKV is the default recording container.** It tolerates unclean shutdowns;
    MP4 is available for browser-direct playback and remuxed on export.
-3. **Motion detection is pixel-based, not ML-based.** It is cheap, predictable
+4. **Motion detection is pixel-based, not ML-based.** It is cheap, predictable
    and works offline. AI runs only on confirmed motion crops, which keeps the
    detector load proportional to actual activity.
-4. **JSON Schema is normative.** Types are derived by hand to keep the toolchain
+5. **JSON Schema is normative.** Types are derived by hand to keep the toolchain
    dependency-free; drift is caught by validating the shipped example in CI.
-5. **No ORM.** Phase 5 uses `node:sqlite` with explicit SQL; the timeline query is
-   the performance-critical path and needs hand-tuned indexes.
-6. **Configuration is not the database.** Cameras, layouts and rules live in
-   `icamify.json`; events, detections and segments live in SQLite.
+6. **No ORM.** The index uses `node:sqlite` with explicit SQL and hand-tuned
+   indexes; the timeline query is the performance-critical path.
+7. **Configuration is not the database.** Cameras, layouts and rules live in
+   `icamify.json`; events, detections and segments live in SQLite. Runtime tuning
+   that an operator expects to keep (motion zones, sensitivity) is stored beside the
+   state directory, never written back into the config file.
+8. **The filesystem owns recordings.** A lost index costs a rescan, not footage;
+   deletion is a tombstone plus a file unlink, so audit history survives the file.

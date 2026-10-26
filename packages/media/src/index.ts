@@ -72,6 +72,34 @@ export {
   type ResolvedProfile,
 } from './plan.ts';
 
+export {
+  cameraRecordingPaths,
+  finalSegmentPath,
+  hotSegmentName,
+  parseHotSegmentName,
+  resolveRecordExtension,
+  resolveVolumeId,
+  type CameraRecordingPaths,
+  type RecordingReason,
+} from './record/paths.ts';
+export {
+  SegmentWatcher,
+  type ClosedSegment,
+  type SegmentWatcherOptions,
+} from './record/watcher.ts';
+export { SegmentWindow, type BufferedSegment } from './record/prebuffer.ts';
+export {
+  CameraRecorder,
+  type CameraRecorderOptions,
+  type RecordedSegmentInfo,
+  type RecorderCallbacks,
+  type RecorderPipelineHost,
+  type RecorderStartOptions,
+  type RecorderState,
+  type RecorderStatus,
+  type TriggerKind,
+} from './record/recorder.ts';
+
 export const MEDIA_VERSION = '0.1.0';
 
 export interface StartPipelineOptions extends PipelinePlanOptions {

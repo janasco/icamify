@@ -3,8 +3,9 @@
 Zero-plugin Vue 3 SPA built with Vite. Same origin as the API, so the session
 cookie, WebSocket and MSE socket need no CORS configuration.
 
-**Phase:** 2 (grid + MSE/MJPEG live view). Timeline, settings and the zone editor
-come later; the console does not link controls for them.
+**Phase:** 3 (grid + MSE/MJPEG live view + motion overlay + zone editor + clips).
+The visual timeline and settings editors come later; the console links no dead
+controls for them.
 
 ## Layout
 
@@ -18,8 +19,10 @@ src/
   style.css                  dark console theme
   components/
     LoginView.vue            username/password, actionable hints
-    Dashboard.vue            top bar, camera rail, grid, control socket
-    CameraTile.vue           per-tile player, snapshot button, fullscreen
+    Dashboard.vue            top bar, camera rail, grid, control socket, drawers
+    CameraTile.vue           per-tile player, motion boxes, REC state, snapshot, fullscreen
+    MotionEditor.vue         paintable zone matrix + sensitivity (GET/PUT motion API)
+    ClipsPanel.vue           recordings drawer, inline playback from the Range endpoint
 ```
 
 ## Transport ladder
@@ -52,6 +55,26 @@ src/
   focuses one camera.
 - Preferences persist in `localStorage`: `icamify.columns`, `icamify.order`,
   `icamify.focus`. Configured layouts seed the initial order and column count.
+
+### Motion and recordings
+
+- The control socket pushes `motion` messages: episode start/end plus at most one
+  update per second while active. The tile draws those normalised boxes as an SVG
+  overlay, pulses the MOTION pill and shows the changed percentage.
+- `camera.recording.state` drives the tile indicator: `recording` (pulsing REC),
+  `buffering` (BUF, motion mode holding pre-roll), `stalled`/`error` (warn/err),
+  plus `pre-buffer Ns` from `bufferedSeconds` and a `re-encode` hint when the
+  record profile is not direct-to-disk.
+- The gear button on a tile opens the zone editor: paint cells with a click-drag,
+  switch include/exclude, fill/clear/invert, set sensitivity, save. Saving sends
+  `PUT /api/cameras/:id/motion` (operator or admin) and the mask is persisted
+  server-side, so it survives a reload and a restart.
+- The Clips button opens the recordings drawer. Clips arrive live over
+  `recording:segment`; the selected clip plays inline from
+  `/api/recordings/:id/file` (the browser uses byte ranges to seek within an MKV)
+  and can be downloaded. The drawer follows the focused camera.
+- Viewers see the gear and the save button disabled: the API requires `operator`,
+  and the UI does not offer an action the server will reject.
 
 ## Development
 

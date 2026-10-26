@@ -5,8 +5,8 @@ a profile into an argv, probing sources, supervising child processes and grabbin
 snapshots. Node never touches pixel data except the small raw frames produced for
 motion detection.
 
-**Phase:** 1 (ingest, probing, supervision) done; recording segmenter and pre-buffer
-land in Phase 3, live fan-out in Phase 2.
+**Phase:** 1 (ingest, probing, supervision) and 3 (segmenting recorder, pre-buffer
+ring) done; live fan-out lives in `@icamify/stream` (Phase 2).
 
 ## Layout
 
@@ -24,8 +24,35 @@ src/
     source.ts        StreamSource → demuxer args, credential injection, masking
     probe.ts         ffprobe JSON → StreamProbe with actionable failures
     supervisor.ts    per-camera state machine: backoff, health, restart events
-test/                54 tests (argv, toolchain parsing, plans, supervisor)
+  record/
+    paths.ts         hot dir, dated recordings tree, local-time file names
+    watcher.ts       segment completion (newer file appeared, or mtime is stale)
+    prebuffer.ts     SegmentWindow: overlap lookup, expiry, take
+    recorder.ts      CameraRecorder: modes, trigger windows, adopt/drop, status
+test/                96 tests (argv, toolchain, plans, supervisor, processes, watcher, recorder)
 ```
+
+## Recording model
+
+`CameraRecorder` keeps **one** long-lived FFmpeg process per recording camera and
+writes 2–10 s segments (motion/alert) or `segmentMinutes`-sized files (continuous)
+into `<recordings>/<camera>/.hot`. A `SegmentWatcher` decides a file is complete
+when a newer one appears (names are timestamp-ordered) or when its mtime has been
+idle for 1.5× the segment length. Complete files are either:
+
+- **adopted** — renamed into `<camera>/<YYYYMMDD>/<HHMMSS>-<reason>.mkv` and handed
+  to the caller (which indexes it), or
+- **buffered** — kept in `SegmentWindow` as the pre-buffer, until a trigger adopts
+  them or the window slides past and they are deleted.
+
+A trigger opens a window from `now − preBufferSeconds` to
+`lastTrigger + postRollSeconds`; overlapping buffered segments are adopted
+immediately, so the clip contains the seconds before the event. Repeat triggers
+(the motion service's once-per-second heartbeat) extend the window without opening
+new events.
+
+`mode: 'off'` starts nothing, and `@icamify/media` never imports the index: the
+recorder emits `RecordedSegmentInfo` and the server persists it.
 
 ## Invariants
 
@@ -60,8 +87,10 @@ supervisor's ladder guarantees the process still dies. The consequence is that a
 forced `SIGKILL` can leave the last Matroska segment without its trailer — which is
 exactly why MKV is the default container: the file stays decodable (verified with
 FFmpeg 7.0.2: a killed 3s segment still yielded all packets up to the kill),
-whereas an MP4 would be unplayable. Phase 3 replaces this with `.part` files and an
-explicit finalize/rename step.
+whereas an MP4 would be unplayable. The recorder additionally treats a segment as
+complete only after the muxer has moved on or its mtime has gone stale, and adopts
+it with a rename inside the same volume — so an interrupted write is never indexed
+as a clip.
 
 ## Verification
 

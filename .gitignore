@@ -1,6 +1,9 @@
 # dependencies
 node_modules/
 
+# local toolchain downloads (ffmpeg binaries for local end-to-end checks)
+.tools/
+
 # build output
 dist/
 *.tsbuildinfo

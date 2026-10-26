@@ -1,4 +1,6 @@
 import type { Role } from '@icamify/core';
+import type { RecordedEvent, RecordingSegment } from '@icamify/storage';
+import type { NormalizedBox } from '../motion/service.ts';
 import type { CameraView } from '../runtime.ts';
 import type { IceCandidateInit } from '../webrtc/signaling.ts';
 
@@ -32,6 +34,19 @@ export type ServerMessage =
   | { type: 'subscribed'; topics: string[] }
   | { type: 'cameras'; cameras: CameraView[] }
   | { type: 'camera:status'; camera: CameraView }
+  | {
+      type: 'motion';
+      cameraId: string;
+      /** True once an episode starts; false when it ends. */
+      active: boolean;
+      at: number;
+      percent: number;
+      peakPercent?: number;
+      /** Detection boxes in 0..1 image coordinates. */
+      boxes?: NormalizedBox[];
+    }
+  | { type: 'recording:segment'; segment: RecordingSegment }
+  | { type: 'recording:event'; event: RecordedEvent; closed: boolean }
   | { type: 'error'; code: string; message: string }
   | { type: 'webrtc:answer'; sessionId: string; cameraId: string; sdp: string }
   | { type: 'webrtc:error'; code: string; message: string };

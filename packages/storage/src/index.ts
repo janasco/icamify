@@ -1,7 +1,7 @@
 import type { ArchiveProvider, StorageVolume } from '@icamify/core';
 
 /**
- * Storage contracts (Phase 5).
+ * Storage contracts.
  *
  * The database is the index; the filesystem is the source of truth. On startup
  * the index is reconciled against the disk so a crash mid-segment cannot leave a
@@ -9,6 +9,8 @@ import type { ArchiveProvider, StorageVolume } from '@icamify/core';
  */
 
 export type SegmentReason = 'continuous' | 'motion' | 'alert' | 'scheduled' | 'manual';
+
+export type RecordingEventKind = 'motion' | 'ai.object' | 'ai.face' | 'ai.lpr' | 'rule' | 'manual';
 
 export interface RecordingSegment {
   id: string;
@@ -26,6 +28,21 @@ export interface RecordingSegment {
   eventIds: string[];
   /** Set when the user starred the clip; retention never deletes it. */
   protected?: boolean;
+}
+
+/** A motion/AI/rule occurrence; segments link to it. */
+export interface RecordedEvent {
+  id: string;
+  cameraId: string;
+  kind: RecordingEventKind;
+  startedAt: number;
+  endedAt?: number;
+  /** Peak share of zone cells that changed, for motion events. */
+  peakPercent?: number;
+  /** Human label, e.g. "person" once the AI gateway lands. */
+  label?: string;
+  /** Detection boxes as reported by the detector (opaque here). */
+  boxes?: unknown;
 }
 
 export interface VolumeStats {
@@ -66,3 +83,17 @@ export interface VolumeContext {
   archive?: ArchiveTarget;
   archiveProvider?: ArchiveProvider;
 }
+
+export { openDatabase, schemaVersion, SCHEMA_VERSION, type OpenDatabaseOptions } from './db.ts';
+export {
+  RecordingIndex,
+  type EventInput,
+  type EventPatch,
+  type EventQuery,
+  type SegmentInput,
+  type SegmentPatch,
+  type SegmentQuery,
+  type SegmentStats,
+} from './recordings.ts';
+
+export const STORAGE_VERSION = '0.1.0';

@@ -5,22 +5,27 @@ pixel motion, local AI (CodeProject.AI / DeepStack / LPR), ONVIF PTZ and tiered
 retention. An architectural counterpart to Agent DVR / iSpy, built as one Node.js
 process plus a zero-plugin HTML5 console.
 
-**Status: Phase 2 complete — the NVR now runs and streams.** The server boots from
-validated configuration, authenticates users, serves the Vue console, and streams
-cameras to the browser over fragmented MP4 (MSE) with an MJPEG fallback. WebRTC
-signaling, SDP validation and session accounting are implemented; the WebRTC
-*media* engine is the one remaining adapter and is reported honestly rather than
-faked. Recording/motion/timeline are Phase 3.
+**Status: Phase 3 complete — the NVR records and reacts to motion.** The server
+boots from validated configuration, authenticates users, serves the Vue console,
+streams cameras over fragmented MP4 (MSE) with an MJPEG fallback, records every
+configured camera direct-to-disk, runs a pixel motion engine on the sub-stream
+with a paintable zone matrix, and answers clip playback from a SQLite index. The
+console shows live motion boxes, per-tile recorder state, a zone editor and a
+recordings drawer with inline playback.
+
+WebRTC signaling, SDP validation and session accounting are implemented; the
+WebRTC *media* engine is the one remaining adapter and is reported honestly rather
+than faked. AI, retention enforcement and the visual timeline are Phases 4–5.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
 | 1a | Repo, config schema + loader, CLI, tests | ✅ done |
 | 1b | FFmpeg probe/supervisor, RTSP/RTMP/HTTP/USB/file ingest | ✅ done |
 | 2 | HTTP API + auth, control WS, MSE/MJPEG live view, WebRTC signaling, Vue grid console | ✅ done |
-| 2b | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
-| 3 | Direct-to-disk recording, pre-buffer, motion + zones, timeline index | planned |
+| 3 | Direct-to-disk recording, pre-buffer ring, pixel motion + zone matrix, recording index + clip playback | ✅ done |
+| 3b | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
 | 4 | AI gateway, rules engine, notifications, ONVIF PTZ | planned |
-| 5 | Retention manager, archive, timeline playback | planned |
+| 5 | Retention enforcement, archive, visual timeline playback | planned |
 
 ## Requirements
 
@@ -59,7 +64,7 @@ npx icamify serve            # http://localhost:8060
 npx icamify probe --camera front-door --stream sub
 npx icamify ingest --camera front-door --purpose record --dry-run
 
-# every check that CI runs (typecheck + console typecheck + 171 tests)
+# every check that CI runs (typecheck + console typecheck + 247 tests)
 npm run check
 ```
 
@@ -103,10 +108,10 @@ apps/web/         Vue 3 + Vite console (login, camera grid, MSE/MJPEG player)
 packages/core/    config schema engine, types, defaults, validation, masks
 packages/media/   FFmpeg discovery, argv builders, probe, supervisor, snapshots
 packages/stream/  fMP4/MJPEG framing, per-camera live sessions and viewer registry
-packages/motion/  pixel motion engine contracts
+packages/motion/  pixel motion engine: background model, zone matrix, blobs, raw-frame splitter
 packages/ai/      AI gateway + provider contracts
 packages/onvif/   WS-Discovery + PTZ contracts
-packages/storage/ retention, quota and archive contracts
+packages/storage/ SQLite recording index (segments + events); retention/archive contracts
 plugins/          hot-loadable AI providers (reference implementation included)
 config/           canonical JSON Schema + annotated example
 docs/             architecture, configuration and API/streaming reference
@@ -129,8 +134,23 @@ flows, security model and per-phase exit criteria.
 - **Recording is a remux.** The `record-main` profile is `-c copy`; CPU cost is
   effectively zero regardless of resolution. Transcoding exists only for the live
   ladder and derived sub-streams.
+- **Pre-roll without restarting the encoder.** Each recording camera segments
+  continuously into a `.hot` directory; closed segments wait in a ring that covers
+  `preBufferSeconds`. A trigger *adopts* them with a rename — that is where the
+  seconds before the event come from. In continuous mode segments go straight to
+  the recordings tree; in motion/alert mode untriggered ones are deleted when the
+  ring slides.
+- **One trigger window per episode, extended by heartbeat.** Motion start opens the
+  window; each further second of motion extends it, so a person standing in frame
+  records until `postRollSeconds` after they leave instead of stopping at the first
+  post-roll.
 - **The sub-stream does the thinking.** Live grid and motion prefer `streams.sub`,
-  so a 4K camera is not decoded at full resolution to draw a 640×360 tile.
+  so a 4K camera is not decoded at full resolution to draw a 640×360 tile. Motion
+  runs on 320×180 luma, one cell grid, integer arithmetic — a fraction of a core
+  for a 15-camera install.
+- **The index is disposable.** Recordings live on disk; SQLite only answers "what
+  clips do I have and where are the motion events". A truncated or lost database
+  costs a rescan, never footage.
 - **Config fails fast.** Unknown keys, dangling profile/volume/schedule/channel
   references, mismatched zone masks and out-of-bounds layout tiles are startup
   errors with a JSON path; operational hazards are warnings.
@@ -151,8 +171,8 @@ npx icamify ingest --camera <id> --purpose <p>    # run one pipeline (--dry-run/
 npx icamify config validate|print|schema          # configuration commands
 npx icamify user hash                             # argon2id hash from stdin
 
-npm run check              # backend typecheck + console typecheck + 171 tests
-npm test                   # 171 tests: config, media, streams, server
+npm run check              # backend typecheck + console typecheck + 247 tests
+npm test                   # 247 tests: config, media/recorder, motion, storage index, streams, server
 npm run web:build          # build the console into apps/web/dist
 npm run web:dev            # Vite dev server proxying /api and /ws to :8060
 npm run config:validate    # validate ./config/icamify.json
@@ -162,16 +182,27 @@ npm run config:schema      # print the JSON Schema
 
 ## Current limitations
 
+- **Retention is not enforced yet.** Clips accumulate under the recordings tree;
+  `storage.volumes[].maxSizeGb` / `maxAgeHours` and `storage.purge` are validated
+  configuration, not a running purge loop (Phase 5). Today the disk fills.
+- **No visual timeline yet.** Clips are listed newest-first and play inline with
+  byte-range seeking; the day-long scrubbing timeline is Phase 5.
+- **Motion has no retention of its own.** Motion events are rows in the index and
+  carry the *analysis-frame* boxes; AI cropping and label filtering arrive with
+  Phase 4.
+- **Scheduled recording evaluates windows in UTC.** `system.timezone` is advisory
+  and per-schedule timezones are accepted but not converted, so a non-UTC install
+  shifts its schedule.
+- **Alert mode is wired but has no trigger source yet.** The recorder accepts
+  `alert` triggers and indexes them; nothing raises one until the AI/rules engine
+  lands (Phase 4).
 - **WebRTC media is not wired.** Signaling, validation and session caps work; an
   engine (intended: `werift` H.264 bridge) must be registered. Until then
   `/api/system` reports WebRTC unavailable with a reason and the console uses MSE.
 - **Live audio is not carried.** The live plan maps video only.
 - **Resizable tile spans** are not in the console yet; grid size, order and focus
   persist locally. Configured layout tiles seed the initial order.
-- **No recording, motion, AI, PTZ, retention or timeline yet** — Phases 3–5. The
-  contracts and configuration for them exist, and the console does not pretend
-  otherwise.
 - **`system.api.basePath` and `corsOrigins`** are not honoured yet (routes are
   `/api`, console is same-origin); startup warns if a custom base path is set.
-- **Live verification used a file source** with FFmpeg 7.0.2, not physical
-  RTSP/ONVIF hardware; those paths are covered by argv and unit tests.
+- **Verification used a file source** (looping test pattern) with FFmpeg 7.0.2,
+  not physical RTSP/ONVIF hardware; those paths are covered by argv and unit tests.
