@@ -5,15 +5,17 @@ motion, local AI (CodeProject.AI / DeepStack / LPR), ONVIF PTZ and tiered
 retention. An architectural counterpart to Agent DVR / iSpy, built as one Node.js
 process and a zero-plugin HTML5 console.
 
-**Status: Phase 1a complete — configuration foundation.** The schema, loader,
-defaults, environment/secret handling, integrity checks, zone-matrix codec, CLI
-and tests are implemented and green. FFmpeg ingestion and the web console are the
-next phases (see [docs/architecture.md](./docs/architecture.md#9-phase-plan)).
+**Status: Phase 1b complete — configuration foundation and FFmpeg ingest.** The
+schema, loader, integrity checks and CLI are green, and the media layer now probes
+sources, builds argv, supervises FFmpeg with backoff and runs record/live/detect
+pipelines straight from configuration (95 tests). The web console and the API are
+next (see
+[docs/architecture.md](./docs/architecture.md#9-phase-plan)).
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
 | 1a | Repo, config schema + loader, CLI, tests | ✅ done |
-| 1b | FFmpeg probe/supervisor, RTSP/RTMP/HTTP/USB/file ingest | next |
+| 1b | FFmpeg probe/supervisor, RTSP/RTMP/HTTP/USB/file ingest | ✅ done |
 | 2 | HTTP/WS/WebRTC signaling, Vue grid console | planned |
 | 3 | Direct-to-disk recording, pre-buffer, motion + zones | planned |
 | 4 | AI gateway, rules engine, notifications, ONVIF PTZ | planned |
@@ -23,7 +25,9 @@ next phases (see [docs/architecture.md](./docs/architecture.md#9-phase-plan)).
 
 - **Node.js ≥ 24** (the code is TypeScript executed natively via type stripping —
   no build step in development)
-- **FFmpeg / ffprobe** on `PATH` (used from Phase 1b onward)
+- **FFmpeg 5+ / ffprobe** on `PATH` (or set `ICAMIFY_FFMPEG_PATH` /
+  `ICAMIFY_FFPROBE_PATH`). Built with the encoders your profiles name —
+  `icamify doctor` checks this per camera.
 - Optional: CodeProject.AI or DeepStack instance for object/face/LPR detection
 
 ## Quick start
@@ -36,6 +40,16 @@ cp config/icamify.example.json config/icamify.json
 
 # validate: schema + environment references + referential integrity
 npx icamify config validate
+
+# is this machine ready? Node, config, FFmpeg, encoders and storage paths
+npx icamify doctor
+
+# what is actually on the wire for one camera
+npx icamify probe --camera front-door --stream sub
+
+# inspect or run one pipeline without the web UI
+npx icamify ingest --camera front-door --purpose record --dry-run
+npx icamify ingest --camera front-door --purpose record --seconds 10
 
 # print the resolved config with secrets masked
 npx icamify config print
@@ -81,7 +95,7 @@ Schema: [`config/icamify.schema.json`](./config/icamify.schema.json) (add
 apps/server/     icamify CLI + backend composition root
 apps/web/        Vue 3 console (Phase 2)
 packages/core/   config schema engine, types, defaults, validation, masks
-packages/media/  FFmpeg ingest/remux/transcode/recording contracts
+packages/media/  FFmpeg discovery, argv builders, probe, supervisor, snapshots
 packages/motion/ pixel motion engine contracts
 packages/ai/     AI gateway + provider contracts
 packages/onvif/  WS-Discovery + PTZ contracts
@@ -113,10 +127,18 @@ flows, security model and per-phase exit criteria.
 ## Commands
 
 ```bash
+npx icamify doctor [--json]                       # environment readiness
+npx icamify probe --camera <id> [--stream sub]    # ffprobe one stream
+npx icamify ingest --camera <id> --purpose <p>    # run one pipeline (--dry-run/--seconds)
+npx icamify config validate|print|schema          # configuration commands
+
 npm run typecheck          # tsc --noEmit across all workspaces
-npm test                   # 34 tests: config engine + CLI end-to-end
+npm test                   # 95 tests: config engine, media layer, CLI
 npm run check              # typecheck + tests
 npm run config:validate    # validate ./config/icamify.json
 npm run config:print       # resolved config, secrets masked
 npm run config:schema      # print the JSON Schema
 ```
+
+`ingest --dry-run` is the fastest way to see exactly what iCamify will ask FFmpeg
+to do, with credentials masked.

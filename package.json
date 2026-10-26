@@ -21,7 +21,7 @@
     "config:print": "node apps/server/src/cli.ts config print",
     "config:schema": "node apps/server/src/cli.ts config schema",
     "typecheck": "tsc --noEmit",
-    "test": "node --test packages/core/test/*.test.ts apps/server/test/*.test.ts",
+    "test": "node --test packages/core/test/*.test.ts packages/media/test/*.test.ts apps/server/test/*.test.ts",
     "check": "npm run typecheck && npm test"
   },
   "devDependencies": {

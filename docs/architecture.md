@@ -117,9 +117,21 @@ icamify/
 │   │   ├── src/index.ts             ✅
 │   │   └── test/config.test.ts      ✅ 28 tests (load, schema, env, semantics, masks, redaction)
 │   │
-│   ├── media/                       📐 FFmpeg pipeline (Phase 1b → 3)
-│   │   ├── README.md                ✅ planned files, invariants, process policy
-│   │   └── src/index.ts             📐 MediaPipeline, IngestHandle, PreBuffer, StreamProbe
+│   ├── media/                       ✅ FFmpeg pipeline (1b done, recording in Phase 3)
+│   │   ├── README.md                ✅ layout, invariants, shutdown policy
+│   │   ├── src/errors.ts            ✅ MediaError taxonomy
+│   │   ├── src/types.ts             ✅ MediaPipeline, StreamProbe, probe/snapshot options
+│   │   ├── src/plan.ts              ✅ config → argv plan, profile/stream/volume selection
+│   │   ├── src/snapshot.ts          ✅ one-shot JPEG grab with magic-byte check
+│   │   ├── src/ffmpeg/
+│   │   │   ├── locate.ts            ✅ binary/version discovery + capability table
+│   │   │   ├── args.ts              ✅ pure builders: record/live/detect/snapshot/probe
+│   │   │   └── process.ts           ✅ child supervisor, progress parser, stop ladder
+│   │   ├── src/ingest/
+│   │   │   ├── source.ts            ✅ StreamSource → demuxer args, credential injection
+│   │   │   ├── probe.ts             ✅ ffprobe JSON → StreamProbe
+│   │   │   └── supervisor.ts        ✅ per-camera state machine, backoff, health events
+│   │   └── test/                    ✅ 54 tests (argv, toolchain, plans, supervisor)
 │   │
 │   ├── motion/                      📐 pixel motion engine (Phase 3)
 │   │   ├── README.md                ✅ algorithm, planned files, invariants
@@ -306,7 +318,7 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
 | **1a — Foundation** | Repo layout, workspace tooling, config schema + example, typed config loader, env/secret handling, referential checks, zone mask codec, CLI, tests, docs | ✅ complete |
-| **1b — Media bring-up** | `ffmpeg`/`ffprobe` detection and capability probe, argv builders, process supervisor, RTSP/RTMP/HTTP/USB/file ingest, FFprobe → `StreamProbe`, camera health/backoff, `icamify doctor` | next |
+| **1b — Media bring-up** | `ffmpeg`/`ffprobe` detection and capability probe, argv builders, process supervisor, RTSP/RTMP/HTTP/USB/file ingest, FFprobe → `StreamProbe`, camera health/backoff, `icamify doctor` | ✅ complete |
 | **2 — Live console** | HTTP API + auth, WebSocket hub, WebRTC signaling and session lifecycle, MSE/MJPEG fallback, Vue grid with drag/resize layouts, event feed | planned |
 | **3 — Recording & motion** | Segmenter + `.part` atomic rename, pre-buffer replay, motion engine + zone editor, timeline index, recording modes (continuous/motion/alert/scheduled) | planned |
 | **4 — AI, PTZ, alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, rules engine, notification channels (webhook/email/MQTT/Telegram), ONVIF discovery and PTZ presets/patrol | planned |
@@ -316,8 +328,11 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 
 - **1a** — `npm run check` green; example config validates; broken configs fail
   with actionable paths; all module boundaries exported.
-- **1b** — a real RTSP camera produces `ffprobe`-verified metadata and a 10s MKV
-  segment; killing the camera restarts the job with exponential backoff.
+- **1b** — a camera produces `ffprobe`-verified metadata and a playable MKV
+  segment; killing the source restarts the job with exponential backoff.
+  *(Verified against a file source with FFmpeg 7.0.2: probe, copy recording,
+  live transcode and detection all ran under the supervisor. Verification
+  against a physical RTSP/ONVIF camera is still pending hardware.)*
 - **2** — two browsers watch the same camera through WebRTC with <200ms latency;
   blocking UDP falls back to MSE visibly; layouts persist across reloads.
 - **3** — motion clip includes configured pre-roll; zone exclusions suppress a

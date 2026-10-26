@@ -4,17 +4,29 @@ The only process iCamify runs. It loads and validates the configuration, starts
 the media supervisor, serves the API and the SPA, and brokers WebRTC sessions.
 The `icamify` CLI lives here.
 
-**Phase:** 1 (CLI + config), 2 (HTTP/WS/WebRTC), 3–5 (module wiring).
+**Phase:** 1 (CLI + config + diagnostics), 2 (HTTP/WS/WebRTC), 3–5 (module wiring).
 
 ## Current files
 
 ```
 src/
-  cli.ts     # icamify config validate | print | schema
-  index.ts   # composition root (Phase 2)
+  cli.ts                    # argument parsing, config commands, dispatch
+  commands/diagnostics.ts   # doctor | probe | ingest
+  index.ts                  # composition root (Phase 2)
 test/
   cli.test.ts
 ```
+
+## Diagnostics commands
+
+| Command | Answers |
+| ------- | ------- |
+| `icamify doctor` | Is Node, the config, FFmpeg, every profile's encoder and each storage path usable? |
+| `icamify probe --camera <id> [--stream sub]` | What is actually on the wire — codec, resolution, fps, bitrate, audio? |
+| `icamify ingest --camera <id> --purpose <p>` | Runs one record/live/detect pipeline under the supervisor; `--dry-run` prints the exact argv with credentials masked. |
+
+`doctor` exits non-zero on errors, warnings do not fail. It builds plans without
+starting them, so it needs no camera to be online.
 
 ## Planned layout
 

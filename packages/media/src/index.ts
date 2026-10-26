@@ -1,64 +1,153 @@
-import type { CameraConfig, StreamProfile, StreamSource } from '@icamify/core';
+import type { CameraConfig, CameraHealthOptions, ResolvedIcamifyConfig } from '@icamify/core';
+import type { ProgressFrame, SpawnFn } from './ffmpeg/process.ts';
+import { probeStream } from './ingest/probe.ts';
+import { IngestSupervisor, type IngestEvent } from './ingest/supervisor.ts';
+import { buildPipelinePlan, type PipelinePlan, type PipelinePlanOptions } from './plan.ts';
+import { captureSnapshot } from './snapshot.ts';
+import type { MediaEngineOptions, MediaPipeline, PipelinePurpose, StreamProbe } from './types.ts';
+
+export * from './types.ts';
+export * from './errors.ts';
+export {
+  MIN_FFMPEG_MAJOR,
+  createToolRunner,
+  defaultToolRunner,
+  describeToolchain,
+  locateFfmpeg,
+  parseFfmpegVersion,
+  versionAtLeast,
+  versionText,
+  type FfmpegCapabilities,
+  type FfmpegToolchain,
+  type LocateOptions,
+  type ParsedVersion,
+  type ToolInfo,
+  type ToolRunResult,
+  type ToolRunner,
+} from './ffmpeg/locate.ts';
+export {
+  baseArgs,
+  buildDetectArgs,
+  buildLiveArgs,
+  buildProbeArgs,
+  buildRecordArgs,
+  buildSnapshotArgs,
+  selectVideoEncoder,
+  type BuildResult,
+  type CommonBuildOptions,
+  type DetectBuildOptions,
+  type EncoderChoice,
+  type LiveBuildOptions,
+  type LiveOutput,
+  type RecordBuildOptions,
+  type SnapshotBuildOptions,
+} from './ffmpeg/args.ts';
+export {
+  FfmpegProcess,
+  ProgressParser,
+  type ExitResult,
+  type FfmpegProcessOptions,
+  type ProgressFrame,
+  type SpawnFn,
+} from './ffmpeg/process.ts';
+export {
+  buildInputArgs,
+  maskUrl,
+  redactArgv,
+  withCredentials,
+  type SourceArgs,
+  type SourceBuildOptions,
+} from './ingest/source.ts';
+export { probeStream } from './ingest/probe.ts';
+export { IngestSupervisor, cameraHealthOptions, type IngestEvent, type IngestSupervisorOptions } from './ingest/supervisor.ts';
+export { captureSnapshot, createSnapshotRunner } from './snapshot.ts';
+export {
+  buildPipelinePlan,
+  defaultOutputTemplate,
+  resolveProfileForPurpose,
+  resolveRecordingsDir,
+  selectSource,
+  type PipelinePlan,
+  type PipelinePlanOptions,
+  type ResolvedProfile,
+} from './plan.ts';
+
+export const MEDIA_VERSION = '0.1.0';
+
+export interface StartPipelineOptions extends PipelinePlanOptions {
+  health?: CameraHealthOptions;
+  onEvent?: (event: IngestEvent) => void;
+  onProgress?: (frame: ProgressFrame) => void;
+  /** Consumes the media/raw-frame stream (live and detect purposes). */
+  onStdout?: (chunk: Buffer) => void;
+  spawn?: SpawnFn;
+  healthyAfterMs?: number;
+  killGraceMs?: number;
+}
 
 /**
- * Media pipeline contracts (Phase 1).
- *
- * iCamify never decodes video in Node. It supervises FFmpeg child processes:
- * - `record` jobs use a `copy` profile and write MPEG-TS/MKV segments directly,
- * - `live` jobs transcode the sub-stream once and fan the result out to
- *   WebRTC / MSE / MJPEG consumers,
- * - `detect` jobs produce small raw frames for the motion engine.
+ * Composition root for the media layer: owns the binary paths and turns a camera
+ * + purpose into a supervised FFmpeg job. Restart/backoff policy lives in
+ * `IngestSupervisor`; command shaping lives in the pure builders, so neither
+ * leaks into the HTTP or storage layers.
  */
+export class MediaEngine implements MediaPipeline {
+  readonly options: MediaEngineOptions;
 
-export type PipelinePurpose = 'record' | 'live' | 'detect';
-export type PipelineState = 'starting' | 'running' | 'degraded' | 'stopped' | 'failed';
+  constructor(options: MediaEngineOptions) {
+    this.options = options;
+  }
 
-export interface StreamProbe {
-  container: string;
-  videoCodec: string;
-  width: number;
-  height: number;
-  fps: number;
-  bitrateKbps?: number;
-  audioCodec?: string;
-  raw: string;
-}
+  probe(source: CameraConfig['streams']['main'], timeoutMs?: number): Promise<StreamProbe> {
+    return probeStream(source, {
+      ffprobePath: this.options.ffprobePath,
+      timeoutMs: timeoutMs ?? this.options.probeTimeoutMs,
+    });
+  }
 
-export interface IngestOptions {
-  cameraId: string;
-  source: StreamSource;
-  profile: StreamProfile;
-  purpose: PipelinePurpose;
-  /** Where a record job writes its segment (resolved by @icamify/storage). */
-  outputPath?: string;
-}
+  async snapshot(source: CameraConfig['streams']['main'], maxWidth?: number): Promise<Buffer> {
+    const result = await captureSnapshot(source, {
+      ffmpegPath: this.options.ffmpegPath,
+      maxWidth,
+      timeoutMs: this.options.snapshotTimeoutMs,
+    });
+    return result.jpeg;
+  }
 
-export interface IngestHandle {
-  readonly cameraId: string;
-  readonly purpose: PipelinePurpose;
-  /** FFmpeg process id, for diagnostics and process-tree cleanup. */
-  readonly pid?: number;
-  state(): PipelineState;
-  /** Resolves once FFmpeg has exited and buffers are flushed. */
-  stop(): Promise<void>;
-}
+  plan(
+    config: ResolvedIcamifyConfig,
+    camera: CameraConfig,
+    purpose: PipelinePurpose,
+    options: PipelinePlanOptions = {},
+  ): PipelinePlan {
+    return buildPipelinePlan(config, camera, purpose, {
+      ffmpegMajor: this.options.ffmpegMajor,
+      hasEncoder: this.options.hasEncoder,
+      ...options,
+    });
+  }
 
-export interface MediaPipeline {
-  probe(source: StreamSource, timeoutMs?: number): Promise<StreamProbe>;
-  start(options: IngestOptions): Promise<IngestHandle>;
-  /** Grabs a JPEG from the recording stream on demand. */
-  snapshot(camera: CameraConfig, maxWidth?: number): Promise<Buffer>;
-}
-
-/**
- * Rolling in-memory GOP cache used to replay pre-roll into motion clips.
- * Implementations must keep whole keyframe-to-keyframe groups so the concatenated
- * output stays decodable.
- */
-export interface PreBuffer {
-  push(chunk: Uint8Array): void;
-  /** Yields buffered chunks covering the last `seconds`. */
-  drain(seconds: number): AsyncIterable<Uint8Array>;
-  bytes(): number;
-  clear(): void;
+  /** Builds the plan and starts supervising it. Returns the live supervisor. */
+  start(
+    config: ResolvedIcamifyConfig,
+    camera: CameraConfig,
+    purpose: PipelinePurpose,
+    options: StartPipelineOptions = {},
+  ): IngestSupervisor {
+    const supervisor = new IngestSupervisor({
+      cameraId: camera.id,
+      purpose,
+      bin: this.options.ffmpegPath,
+      health: options.health ?? camera.health,
+      onEvent: options.onEvent,
+      onProgress: options.onProgress,
+      onStdout: options.onStdout,
+      spawn: options.spawn,
+      healthyAfterMs: options.healthyAfterMs,
+      killGraceMs: options.killGraceMs,
+      build: () => buildPipelinePlan(config, camera, purpose, { ...options, ffmpegMajor: this.options.ffmpegMajor, hasEncoder: this.options.hasEncoder }),
+    });
+    supervisor.start();
+    return supervisor;
+  }
 }

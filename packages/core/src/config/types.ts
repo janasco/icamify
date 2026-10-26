@@ -285,6 +285,14 @@ export interface PtzConfig {
   };
 }
 
+/** Restart/watchdog policy for a camera's ingest pipelines. */
+export interface CameraHealthOptions {
+  probeIntervalSeconds?: number;
+  offlineAfterFailures?: number;
+  restartBackoffSeconds?: number;
+  maxBackoffSeconds?: number;
+}
+
 export interface CameraConfig {
   id: string;
   name: string;
@@ -313,12 +321,7 @@ export interface CameraConfig {
     height: number;
     label?: string;
   }>;
-  health?: {
-    probeIntervalSeconds?: number;
-    offlineAfterFailures?: number;
-    restartBackoffSeconds?: number;
-    maxBackoffSeconds?: number;
-  };
+  health?: CameraHealthOptions;
   ui?: { order?: number; accentColor?: string };
 }
 

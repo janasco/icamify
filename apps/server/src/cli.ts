@@ -12,18 +12,27 @@ import {
   redactConfig,
   type ConfigIssue,
 } from '@icamify/core';
+import type { PipelinePurpose } from '@icamify/media';
+import { runDoctor, runIngest, runProbe, type CommonCommandOptions } from './commands/diagnostics.ts';
 
 const PROGRAM = 'icamify';
 
 const HELP = `${PROGRAM} ${CORE_VERSION} — self-hosted NVR/VMS
 
 Usage:
+  ${PROGRAM} doctor         [--config <path>] [--json]
+  ${PROGRAM} probe          --camera <id> [--stream main|sub] [--json]
+  ${PROGRAM} ingest         --camera <id> --purpose record|live|detect [--dry-run] [--seconds <n>]
   ${PROGRAM} config validate [--config <path>] [--json] [--quiet]
   ${PROGRAM} config print    [--config <path>] [--show-secrets]
   ${PROGRAM} config schema   [--output <path>]
   ${PROGRAM} --help | --version
 
 Commands:
+  doctor            Check Node, config, FFmpeg, encoders and storage before starting.
+  probe             Run ffprobe against one camera stream and print what it found.
+  ingest            Run one camera pipeline in the foreground. With --dry-run it
+                    prints the exact FFmpeg command without touching the camera.
   config validate   Parse, merge, validate and integrity-check the configuration.
                     Exits 1 when there is an error; warnings do not fail.
   config print      Print the fully resolved configuration with secrets redacted.
@@ -32,8 +41,15 @@ Commands:
 Options:
   -c, --config <path>   Configuration file (default: $ICAMIFY_CONFIG or
                         ./config/icamify.json).
-      --json            Machine-readable output for validate.
-      --quiet           Only print problems, not the summary.
+      --camera <id>     Camera id from cameras[].
+      --purpose <kind>  record | live | detect.
+      --stream <kind>   main | sub (default: main).
+      --dry-run         Print the pipeline command instead of running it.
+      --seconds <n>     Stop the pipeline after n seconds (default: until Ctrl-C).
+      --ffmpeg <path>   FFmpeg binary (default: $ICAMIFY_FFMPEG_PATH or PATH).
+      --ffprobe <path>  ffprobe binary (default: $ICAMIFY_FFPROBE_PATH or PATH).
+      --json            Machine-readable output for doctor, probe and validate.
+      --quiet           Suppress per-stream progress and FFmpeg stderr lines.
       --show-secrets    Include secret values in "config print" output. Avoid in
                         shared terminals; secrets are redacted by default.
   -o, --output <path>   Write schema to a file instead of stdout.
@@ -43,6 +59,8 @@ Options:
 Getting started:
   cp config/icamify.example.json config/icamify.json
   ${PROGRAM} config validate
+  ${PROGRAM} doctor
+  ${PROGRAM} ingest --camera front-door --purpose record --dry-run
 `;
 
 interface ParsedArgs {
@@ -52,6 +70,13 @@ interface ParsedArgs {
   quiet: boolean;
   showSecrets: boolean;
   output?: string;
+  camera?: string;
+  purpose?: string;
+  stream?: string;
+  seconds?: string;
+  dryRun: boolean;
+  ffmpeg?: string;
+  ffprobe?: string;
   help: boolean;
   version: boolean;
 }
@@ -66,6 +91,13 @@ function parseCliArgs(argv: string[]): ParsedArgs {
       quiet: { type: 'boolean', short: 'q', default: false },
       'show-secrets': { type: 'boolean', default: false },
       output: { type: 'string', short: 'o' },
+      camera: { type: 'string' },
+      purpose: { type: 'string' },
+      stream: { type: 'string' },
+      seconds: { type: 'string' },
+      'dry-run': { type: 'boolean', default: false },
+      ffmpeg: { type: 'string' },
+      ffprobe: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },
@@ -78,9 +110,31 @@ function parseCliArgs(argv: string[]): ParsedArgs {
     quiet: values.quiet ?? false,
     showSecrets: values['show-secrets'] ?? false,
     output: values.output,
+    camera: values.camera,
+    purpose: values.purpose,
+    stream: values.stream,
+    seconds: values.seconds,
+    dryRun: values['dry-run'] ?? false,
+    ffmpeg: values.ffmpeg,
+    ffprobe: values.ffprobe,
     help: values.help ?? false,
     version: values.version ?? false,
   };
+}
+
+function commonOptions(args: ParsedArgs): CommonCommandOptions {
+  return {
+    configPath: args.config,
+    ffmpegPath: args.ffmpeg,
+    ffprobePath: args.ffprobe,
+    json: args.json,
+    quiet: args.quiet,
+  };
+}
+
+function usageError(message: string): number {
+  process.stderr.write(`${PROGRAM}: ${message}\n\n${HELP}`);
+  return 2;
 }
 
 function formatIssue(issue: ConfigIssue): string {
@@ -228,13 +282,16 @@ function commandSchema(args: ParsedArgs): number {
   return 0;
 }
 
-function main(argv: string[]): number {
+function parsePurpose(value: string | undefined): PipelinePurpose | undefined {
+  return value === 'record' || value === 'live' || value === 'detect' ? value : undefined;
+}
+
+async function main(argv: string[]): Promise<number> {
   let args: ParsedArgs;
   try {
     args = parseCliArgs(argv);
   } catch (error) {
-    process.stderr.write(`${PROGRAM}: ${error instanceof Error ? error.message : String(error)}\n\n${HELP}`);
-    return 2;
+    return usageError(error instanceof Error ? error.message : String(error));
   }
 
   if (args.version) {
@@ -247,12 +304,38 @@ function main(argv: string[]): number {
   }
 
   const [group, action, ...rest] = args.command;
-  if (rest.length > 0) {
-    process.stderr.write(`${PROGRAM}: unexpected arguments: ${rest.join(' ')}\n`);
-    return 2;
+
+  if (group === 'doctor') {
+    if (action !== undefined) return usageError(`doctor takes no subcommand (got "${action}")`);
+    return runDoctor(commonOptions(args));
+  }
+
+  if (group === 'probe') {
+    if (action !== undefined) return usageError(`unexpected argument "${action}" for probe`);
+    if (args.camera === undefined) return usageError('probe needs --camera <id>');
+    if (args.stream !== undefined && args.stream !== 'main' && args.stream !== 'sub') {
+      return usageError('--stream must be "main" or "sub"');
+    }
+    return runProbe({ ...commonOptions(args), cameraId: args.camera, stream: args.stream ?? 'main' });
+  }
+
+  if (group === 'ingest') {
+    if (action !== undefined) return usageError(`unexpected argument "${action}" for ingest`);
+    if (args.camera === undefined) return usageError('ingest needs --camera <id>');
+    const purpose = parsePurpose(args.purpose);
+    if (purpose === undefined) return usageError('ingest needs --purpose record|live|detect');
+
+    let seconds: number | undefined;
+    if (args.seconds !== undefined) {
+      const parsed = Number(args.seconds);
+      if (!Number.isFinite(parsed) || parsed < 0) return usageError('--seconds must be a non-negative number');
+      seconds = parsed;
+    }
+    return runIngest({ ...commonOptions(args), cameraId: args.camera, purpose, dryRun: args.dryRun, seconds });
   }
 
   if (group === 'config') {
+    if (rest.length > 0) return usageError(`unexpected arguments: ${rest.join(' ')}`);
     switch (action) {
       case 'validate':
         return commandValidate(args);
@@ -261,17 +344,13 @@ function main(argv: string[]): number {
       case 'schema':
         return commandSchema(args);
       default:
-        process.stderr.write(`${PROGRAM}: unknown config command "${action ?? ''}"\n\n${HELP}`);
-        return 2;
+        return usageError(`unknown config command "${action ?? ''}"`);
     }
   }
 
-  process.stderr.write(
-    `${PROGRAM}: unknown command "${args.command.join(' ')}". ` +
-      'The server entrypoint is implemented in Phase 2; configuration commands are available now.\n\n',
+  return usageError(
+    `unknown command "${args.command.join(' ')}". Available: doctor, probe, ingest, config.`,
   );
-  process.stderr.write(HELP);
-  return 2;
 }
 
-process.exitCode = main(process.argv.slice(2));
+process.exitCode = await main(process.argv.slice(2));

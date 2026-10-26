@@ -791,4 +791,6 @@ When the schema changes, update together:
 4. `config/icamify.example.json` — it must stay valid
 5. `packages/core/test/config.test.ts` — add a failing case for the new rule
 
-`npm run check` (typecheck + 34 tests) is the gate.
+`npm run check` (typecheck + 95 tests) is the gate; `icamify doctor` additionally
+checks the configuration against the installed FFmpeg build (encoders, protocol
+support, storage paths) before a single camera is started.

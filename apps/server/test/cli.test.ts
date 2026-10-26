@@ -100,3 +100,60 @@ test('reports an unknown subcommand with exit code 2', () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /unknown config command/);
 });
+
+test('ingest requires a camera and a purpose', () => {
+  const noCamera = run(['ingest', '--purpose', 'record']);
+  assert.equal(noCamera.status, 2);
+  assert.match(noCamera.stderr, /--camera/);
+
+  const noPurpose = run(['ingest', '--camera', 'front-door']);
+  assert.equal(noPurpose.status, 2);
+  assert.match(noPurpose.stderr, /--purpose/);
+});
+
+test('ingest reports an unknown camera without touching FFmpeg', () => {
+  const result = run(['ingest', '--config', EXAMPLE, '--camera', 'nope', '--purpose', 'record']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unknown camera "nope"/);
+  assert.match(result.stderr, /front-door/);
+});
+
+test('ingest explains an unusable FFmpeg instead of throwing a stack trace', () => {
+  const result = run([
+    'ingest',
+    '--config',
+    EXAMPLE,
+    '--camera',
+    'lobby',
+    '--purpose',
+    'live',
+    '--dry-run',
+    '--ffmpeg',
+    '/nonexistent/ffmpeg',
+  ]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ffmpeg/i);
+  assert.ok(!/\n\s+at /.test(result.stderr), `stack trace leaked: ${result.stderr}`);
+});
+
+test('doctor reports an unusable FFmpeg as a failing check', () => {
+  const result = run([
+    'doctor',
+    '--config',
+    EXAMPLE,
+    '--json',
+    '--ffmpeg',
+    '/nonexistent/ffmpeg',
+    '--ffprobe',
+    '/nonexistent/ffprobe',
+  ]);
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout) as {
+    ok: boolean;
+    checks: Array<{ name: string; status: string; detail: string }>;
+  };
+  assert.equal(payload.ok, false);
+  const ffmpeg = payload.checks.find((check) => check.name === 'ffmpeg');
+  assert.equal(ffmpeg?.status, 'error');
+  assert.match(ffmpeg?.detail ?? '', /ffmpeg/i);
+});
