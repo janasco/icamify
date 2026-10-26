@@ -1,0 +1,16 @@
+{
+  "name": "@icamify/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "iCamify backend: HTTP/WebSocket/WebRTC composition root and the icamify CLI.",
+  "bin": {
+    "icamify": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  }
+}

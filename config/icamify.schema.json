@@ -1,0 +1,1324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://icamify.local/schemas/icamify-config-1.0.json",
+  "title": "iCamify configuration",
+  "description": "Root document for a self-hosted iCamify NVR/VMS deployment. Only `version` is required: the loader deep-merges the file over built-in defaults, resolves ${ENV_VAR} references, validates it against this schema, then verifies referential integrity (profiles, volumes, schedules, channels, groups, layouts) before the runtime starts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint; ignored at runtime."
+    },
+    "version": {
+      "const": "1.0",
+      "description": "Configuration document version. The loader applies migrations for older versions before validation."
+    },
+    "system": {
+      "type": "object",
+      "description": "Process, network and logging settings.",
+      "additionalProperties": false,
+      "properties": {
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "host": { "type": "string", "default": "0.0.0.0" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 8060 },
+            "publicUrl": {
+              "type": "string",
+              "description": "Externally reachable origin used for WebRTC ICE candidates, absolute links and CORS. Example: https://nvr.example.com",
+              "pattern": "^https?://[^\\s]+$"
+            },
+            "trustProxy": {
+              "type": "boolean",
+              "default": false,
+              "description": "Trust X-Forwarded-* headers. Only enable behind a reverse proxy you control."
+            }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Native TLS termination. When disabled, put iCamify behind a TLS-terminating reverse proxy.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "certFile": { "type": "string" },
+            "keyFile": { "type": "string" },
+            "minVersion": { "type": "string", "enum": ["TLSv1.2", "TLSv1.3"], "default": "TLSv1.2" }
+          },
+          "dependentRequired": {
+            "certFile": ["keyFile"],
+            "keyFile": ["certFile"]
+          }
+        },
+        "logging": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": {
+              "type": "string",
+              "enum": ["trace", "debug", "info", "warn", "error", "fatal"],
+              "default": "info"
+            },
+            "file": {
+              "type": "string",
+              "description": "Log file path. Omit to log to stdout only (recommended under systemd/docker)."
+            },
+            "maxFileMb": { "type": "integer", "minimum": 1, "default": 64 },
+            "maxFiles": { "type": "integer", "minimum": 1, "default": 5 },
+            "pretty": { "type": "boolean", "default": false, "description": "Human-readable lines for consoles; structured JSON is always used in files." },
+            "redactSecrets": { "type": "boolean", "default": true }
+          }
+        },
+        "timezone": {
+          "type": "string",
+          "description": "IANA timezone used by schedules, filename templates and the timeline UI.",
+          "default": "UTC"
+        },
+        "workers": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Bounded worker pools. Media demuxing runs in FFmpeg child processes; these pool sizes bound decode/motion/AI work.",
+          "properties": {
+            "motion": { "type": "integer", "minimum": 1, "maximum": 64, "default": 2 },
+            "ai": { "type": "integer", "minimum": 1, "maximum": 64, "default": 2 },
+            "thumbnail": { "type": "integer", "minimum": 1, "maximum": 32, "default": 1 }
+          }
+        },
+        "shutdownGraceSeconds": { "type": "integer", "minimum": 0, "maximum": 300, "default": 15 },
+        "healthCheckSeconds": { "type": "integer", "minimum": 1, "default": 10 },
+        "api": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "basePath": { "type": "string", "pattern": "^/[a-zA-Z0-9._~/-]*$", "default": "/api" },
+            "corsOrigins": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Additional allowed origins. Same-origin is always allowed; '*' is rejected at runtime."
+            },
+            "rateLimit": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "windowMs": { "type": "integer", "minimum": 1000, "default": 60000 },
+                "max": { "type": "integer", "minimum": 1, "default": 600 }
+              }
+            },
+            "websocket": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string", "pattern": "^/", "default": "/ws" },
+                "heartbeatSeconds": { "type": "integer", "minimum": 5, "default": 20 },
+                "maxClients": { "type": "integer", "minimum": 1, "default": 64 }
+              }
+            }
+          }
+        },
+        "web": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Static SPA hosting. In development the Vite dev server proxies /api and /ws instead.",
+          "properties": {
+            "serveStatic": { "type": "boolean", "default": true },
+            "staticDir": { "type": "string", "default": "./apps/web/dist" }
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Local accounts and bearer tokens. Roles: admin (everything), operator (live view, PTZ, acknowledge), viewer (live view only).",
+      "properties": {
+        "mode": { "type": "string", "enum": ["none", "local"], "default": "local" },
+        "allowAnonymousViewing": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, unauthenticated clients may open live streams but never recordings, settings or PTZ."
+        },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secret": {
+              "type": "string",
+              "minLength": 32,
+              "x-secret": true,
+              "description": "HMAC key for session cookies. Use ${ICAMIFY_SESSION_SECRET}; never commit a literal value."
+            },
+            "cookieName": { "type": "string", "default": "icamify_session" },
+            "ttlHours": { "type": "integer", "minimum": 1, "maximum": 720, "default": 24 },
+            "idleTimeoutMinutes": { "type": "integer", "minimum": 5, "default": 120 },
+            "secureCookie": { "type": "boolean", "default": true },
+            "sameSite": { "type": "string", "enum": ["strict", "lax", "none"], "default": "lax" }
+          }
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["username", "passwordHash", "role"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "username": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9._@-]+$" },
+              "displayName": { "type": "string", "maxLength": 120 },
+              "role": { "type": "string", "enum": ["admin", "operator", "viewer"] },
+              "passwordHash": {
+                "type": "string",
+                "x-secret": true,
+                "description": "Argon2id PHC string (m=...,t=...,p=...). Never store plaintext."
+              },
+              "enabled": { "type": "boolean", "default": true }
+            }
+          }
+        },
+        "apiTokens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "tokenHash", "role"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+              "tokenHash": { "type": "string", "x-secret": true, "description": "SHA-256 of the bearer token." },
+              "role": { "type": "string", "enum": ["admin", "operator", "viewer"] },
+              "expiresAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}Z)?$" }
+            }
+          }
+        },
+        "lockout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxAttempts": { "type": "integer", "minimum": 1, "default": 8 },
+            "windowMinutes": { "type": "integer", "minimum": 1, "default": 15 },
+            "blockMinutes": { "type": "integer", "minimum": 1, "default": 15 }
+          }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where recordings live, how large they may grow and when they are purged or archived.",
+      "properties": {
+        "rootDir": { "type": "string", "default": "./data" },
+        "recordingsDir": { "type": "string", "default": "recordings" },
+        "snapshotsDir": { "type": "string", "default": "snapshots" },
+        "stateDir": { "type": "string", "default": "state" },
+        "tempDir": { "type": "string", "default": "tmp" },
+        "format": { "type": "string", "enum": ["mkv", "mp4"], "default": "mkv", "description": "mkv survives unclean shutdowns; mp4 is friendlier for browsers and remuxing." },
+        "filenameTemplate": {
+          "type": "string",
+          "default": "{cameraId}/{date}/{time}-{reason}.{ext}",
+          "description": "Placeholders: {cameraId}, {cameraName}, {date}, {time}, {reason}, {ext}."
+        },
+        "segmentMinutes": { "type": "integer", "minimum": 1, "maximum": 1440, "default": 15 },
+        "preBufferSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30,
+          "default": 5,
+          "description": "Global pre-roll cache depth. Cameras may override up to 30s; memory cost is roughly bitrate x seconds."
+        },
+        "preBufferMaxMemoryMb": { "type": "integer", "minimum": 16, "default": 512 },
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": { "type": "string", "enum": ["jpg", "png"], "default": "jpg" },
+            "quality": { "type": "integer", "minimum": 1, "maximum": 100, "default": 85 },
+            "maxWidth": { "type": "integer", "minimum": 64, "default": 1280 }
+          }
+        },
+        "defaultVolume": { "$ref": "#/$defs/id" },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "path"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "path": { "type": "string", "description": "Absolute path or path relative to storage.rootDir. May be a mounted network share." },
+              "maxSizeGb": { "type": "number", "exclusiveMinimum": 0, "description": "Omit for no size limit (age limit still applies)." },
+              "maxAgeHours": { "type": "number", "exclusiveMinimum": 0, "description": "Delete recordings older than this." },
+              "minFreeDiskGb": { "type": "number", "minimum": 0, "default": 5, "description": "Emergency floor: purge immediately when free space drops below this." },
+              "priority": { "type": "integer", "minimum": 0, "default": 100, "description": "Lower number is filled first and purged last." },
+              "cameraIds": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/id" },
+                "description": "Restrict this volume to specific cameras. Omit to accept any camera."
+              },
+              "archive": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean", "default": false },
+                  "providerId": { "$ref": "#/$defs/id" },
+                  "afterHours": { "type": "number", "minimum": 1, "default": 24, "description": "Age at which segments are copied to the archive target." },
+                  "keepLocalDays": { "type": "number", "minimum": 0, "default": 7, "description": "Local copy retention after a successful archive upload. 0 deletes immediately." }
+                }
+              }
+            }
+          }
+        },
+        "purge": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "intervalSeconds": { "type": "integer", "minimum": 30, "default": 300 },
+            "strategy": {
+              "type": "string",
+              "enum": ["oldest-first", "largest-first", "lowest-priority-first"],
+              "default": "oldest-first"
+            },
+            "batchSize": { "type": "integer", "minimum": 1, "default": 50 },
+            "dryRun": { "type": "boolean", "default": false, "description": "Log what would be deleted without deleting. Useful before enabling aggressive quotas." },
+            "protectFlagged": { "type": "boolean", "default": true, "description": "Never purge clips the user starred or that are attached to an open alert." }
+          }
+        },
+        "diskHealthCheckSeconds": { "type": "integer", "minimum": 10, "default": 60 },
+        "warnAtPercent": { "type": "integer", "minimum": 50, "maximum": 100, "default": 90 },
+        "archiveProviders": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/archiveS3" },
+              { "$ref": "#/$defs/archiveSftp" },
+              { "$ref": "#/$defs/archiveLocal" }
+            ]
+          }
+        }
+      }
+    },
+    "streaming": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Named encoding profiles and the transport ladder used by the live view and the recorder. Profiles are the only place codecs and bitrates are defined so cameras and the UI can refer to them by name.",
+      "properties": {
+        "profiles": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/streamProfile" },
+          "description": "Map of profile name -> encoding settings. `copy` profiles remux the camera stream without re-encoding (0% video CPU, used for direct-to-disk recording)."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "record": { "$ref": "#/$defs/id" },
+            "live": { "$ref": "#/$defs/id" },
+            "detect": { "$ref": "#/$defs/id" }
+          }
+        },
+        "webrtc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "iceServers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["urls"],
+                "properties": {
+                  "urls": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                  "username": { "type": "string" },
+                  "credential": { "type": "string", "x-secret": true }
+                }
+              },
+              "default": [{ "urls": ["stun:stun.l.google.com:19302"] }]
+            },
+            "portRange": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 40000 },
+                "max": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 40099 }
+              }
+            },
+            "publicIp": { "type": "string", "description": "Public/NAT address advertised as the ICE host candidate when iCamify runs behind 1:1 NAT." },
+            "codecPreference": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["h264", "vp8", "vp9", "av1"] },
+              "default": ["h264", "vp8", "vp9"]
+            },
+            "maxBitrateKbps": { "type": "integer", "minimum": 100, "default": 4000 },
+            "maxViewersPerCamera": { "type": "integer", "minimum": 1, "default": 8 },
+            "fallbackAfterMs": { "type": "integer", "minimum": 500, "default": 4000, "description": "If WebRTC has not connected by then, the UI advances down fallbackChain." }
+          }
+        },
+        "mse": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "fragmented-MP4 over WebSocket; the middle rung of the fallback ladder.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "segmentDurationMs": { "type": "integer", "minimum": 250, "default": 1000 },
+            "windowSegments": { "type": "integer", "minimum": 2, "default": 8 }
+          }
+        },
+        "hls": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "High-latency fallback for restrictive networks and mobile browsers.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "segmentSeconds": { "type": "integer", "minimum": 1, "default": 4 },
+            "playlistSize": { "type": "integer", "minimum": 3, "default": 6 }
+          }
+        },
+        "mjpeg": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Last-resort fallback: JPEG over multipart HTTP. Works everywhere, costs CPU.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "fps": { "type": "integer", "minimum": 1, "maximum": 30, "default": 5 },
+            "width": { "type": "integer", "minimum": 160, "default": 640 },
+            "quality": { "type": "integer", "minimum": 1, "maximum": 100, "default": 70 }
+          }
+        },
+        "fallbackChain": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["webrtc", "mse", "hls", "mjpeg"] },
+          "default": ["webrtc", "mse", "mjpeg"]
+        },
+        "maxConcurrentSessions": { "type": "integer", "minimum": 1, "default": 32 },
+        "sessionIdleTimeoutSeconds": { "type": "integer", "minimum": 10, "default": 60 },
+        "onDemandStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start live encoders only while someone is watching. Recording streams are unaffected."
+        }
+      }
+    },
+    "motion": {
+      "type": "object",
+      "description": "Default pixel-differencing configuration. Cameras inherit this and may override any field.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "intervalMs": { "type": "integer", "minimum": 50, "maximum": 5000, "default": 200, "description": "Detection cadence; also caps how often AI frames are sampled." },
+        "sensitivity": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50, "description": "Convenience dial; interpolates threshold and percentThreshold when those are absent." },
+        "threshold": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Per-pixel luminance delta that counts as changed. Omit to derive it from sensitivity (60 at sensitivity 1, 8 at sensitivity 100)." },
+        "percentThreshold": { "type": "number", "minimum": 0, "maximum": 100, "description": "Share of active zone cells/pixels that must change to raise motion. Omit to derive it from sensitivity (5% at sensitivity 1, 0.2% at sensitivity 100)." },
+        "minBlobPercent": { "type": "number", "minimum": 0, "maximum": 100, "default": 0.2, "description": "Ignore isolated changed pixels smaller than this share of the frame (noise suppression)." },
+        "blurRadius": { "type": "integer", "minimum": 0, "maximum": 15, "default": 2 },
+        "grayscale": { "type": "boolean", "default": true },
+        "denoise": { "type": "integer", "minimum": 0, "maximum": 10, "default": 1 },
+        "colorFilter": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Only pixels whose hue lies in these ranges can contribute to motion, e.g. ignore a green tree line.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "minSaturation": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.15 },
+            "hueRanges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["from", "to"],
+                "properties": {
+                  "from": { "type": "number", "minimum": 0, "maximum": 360 },
+                  "to": { "type": "number", "minimum": 0, "maximum": 360 }
+                }
+              }
+            }
+          }
+        },
+        "zones": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Visual inclusion/exclusion matrix painted in the UI. `cells` is a bitmap: one row per line, one character per cell, '1' = active, '0' = ignored.",
+          "properties": {
+            "cols": { "type": "integer", "minimum": 1, "maximum": 64, "default": 16 },
+            "rows": { "type": "integer", "minimum": 1, "maximum": 64, "default": 16 },
+            "cells": {
+              "type": "string",
+              "pattern": "^[01]+(/[01]+)*$",
+              "default": "1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111/1111111111111111",
+              "description": "Mask bitmap. Dimensions are validated against rows x cols at load time."
+            },
+            "mode": { "type": "string", "enum": ["include", "exclude"], "default": "include" }
+          }
+        },
+        "cooldownSeconds": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 10, "description": "Minimum gap between motion events once motion has stopped." },
+        "warmupFrames": { "type": "integer", "minimum": 0, "maximum": 120, "default": 10 },
+        "postMotionSeconds": { "type": "integer", "minimum": 0, "maximum": 600, "default": 10 }
+      }
+    },
+    "cameras": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "streams"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "description": { "type": "string", "maxLength": 500 },
+          "enabled": { "type": "boolean", "default": true },
+          "groupIds": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+          "tags": { "type": "array", "items": { "type": "string", "maxLength": 40 } },
+          "streams": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["main"],
+            "description": "Dual-stream wiring. `main` is the high-resolution recording/direct-to-disk source; `sub` is a low-resolution camera sub-stream used for the grid and motion detection. If `sub` is omitted, iCamify derives one with FFmpeg.",
+            "properties": {
+              "main": { "$ref": "#/$defs/streamSource" },
+              "sub": { "$ref": "#/$defs/streamSource" }
+            }
+          },
+          "profiles": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Per-camera profile overrides; defaults come from streaming.defaults.",
+            "properties": {
+              "record": { "$ref": "#/$defs/id" },
+              "live": { "$ref": "#/$defs/id" },
+              "detect": { "$ref": "#/$defs/id" }
+            }
+          },
+          "recording": { "$ref": "#/$defs/recordingConfig" },
+          "motion": { "$ref": "#/$defs/motionOverride" },
+          "ai": { "$ref": "#/$defs/cameraAiConfig" },
+          "ptz": { "$ref": "#/$defs/ptzConfig" },
+          "audio": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "gainDb": { "type": "number", "minimum": -30, "maximum": 30, "default": 0 }
+            }
+          },
+          "overlay": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "timestamp": { "type": "boolean", "default": true },
+              "cameraName": { "type": "boolean", "default": true },
+              "position": { "type": "string", "enum": ["top-left", "top-right", "bottom-left", "bottom-right"], "default": "top-left" },
+              "fontSize": { "type": "integer", "minimum": 8, "maximum": 96, "default": 20 }
+            }
+          },
+          "privacyMasks": {
+            "type": "array",
+            "description": "Normalized rectangles (0..1) blacked out in live views and snapshots. A copy (remux) recording profile cannot burn masks into video - use an encoded profile if recordings must be masked.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "width", "height"],
+              "properties": {
+                "x": { "type": "number", "minimum": 0, "maximum": 1 },
+                "y": { "type": "number", "minimum": 0, "maximum": 1 },
+                "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                "label": { "type": "string", "maxLength": 60 }
+              }
+            }
+          },
+          "health": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "probeIntervalSeconds": { "type": "integer", "minimum": 5, "default": 30 },
+              "offlineAfterFailures": { "type": "integer", "minimum": 1, "default": 3 },
+              "restartBackoffSeconds": { "type": "integer", "minimum": 1, "default": 5 },
+              "maxBackoffSeconds": { "type": "integer", "minimum": 5, "default": 300 }
+            }
+          },
+          "ui": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "order": { "type": "integer", "default": 0 },
+              "accentColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+            }
+          }
+        }
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "order": { "type": "integer", "default": 0 }
+        }
+      }
+    },
+    "layouts": {
+      "type": "array",
+      "description": "Saved grid dashboards. Tile spans are expressed in grid cells so a layout survives responsive resizing.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "columns", "rows"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "isDefault": { "type": "boolean", "default": false },
+          "columns": { "type": "integer", "minimum": 1, "maximum": 8 },
+          "rows": { "type": "integer", "minimum": 1, "maximum": 8 },
+          "autoFill": { "type": "boolean", "default": false, "description": "Fill empty cells with the next enabled cameras in ui.order." },
+          "tiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cameraId", "x", "y"],
+              "properties": {
+                "cameraId": { "$ref": "#/$defs/id" },
+                "x": { "type": "integer", "minimum": 0, "maximum": 7 },
+                "y": { "type": "integer", "minimum": 0, "maximum": 7 },
+                "width": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 },
+                "height": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 },
+                "stream": { "type": "string", "enum": ["sub", "main"], "default": "sub" },
+                "muted": { "type": "boolean", "default": true },
+                "showOverlay": { "type": "boolean", "default": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schedules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "windows"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "timezone": { "type": "string", "description": "Defaults to system.timezone." },
+          "windows": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["days", "start", "end"],
+              "properties": {
+                "days": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
+                },
+                "start": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+                "end": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$", "description": "An end earlier than start means the window crosses midnight." }
+              }
+            }
+          },
+          "exceptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["date"],
+              "properties": {
+                "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+                "closed": { "type": "boolean", "default": true, "description": "false re-opens the schedule for the whole day." }
+              }
+            }
+          }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "description": "Deterministic automation: when conditions match, actions run. This is the alert-triggered recording and notification engine.",
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dedupeSeconds": { "type": "integer", "minimum": 0, "default": 30 },
+        "channels": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/notificationChannel" }
+        }
+      }
+    },
+    "ai": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "defaultProviderId": { "$ref": "#/$defs/id" },
+        "storeDetectionsDays": { "type": "integer", "minimum": 1, "default": 30 },
+        "maxDetectionsPerFrame": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
+        "providers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/aiProvider" }
+        }
+      }
+    },
+    "onvif": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "discovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "WS-Discovery probe used by the ONVIF scanner to find cameras on the local subnet.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "intervalSeconds": { "type": "integer", "minimum": 30, "default": 300 },
+            "multicastAddress": { "type": "string", "default": "239.255.255.250" },
+            "multicastPort": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 3702 },
+            "subnets": { "type": "array", "items": { "type": "string" }, "description": "CIDR ranges to probe. Empty = derive from local interfaces." },
+            "timeoutMs": { "type": "integer", "minimum": 500, "default": 3000 }
+          }
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "username": { "type": "string" },
+            "password": { "type": "string", "x-secret": true },
+            "timeoutMs": { "type": "integer", "minimum": 500, "default": 5000 }
+          }
+        },
+        "ptz": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "continuousMoveMs": { "type": "integer", "minimum": 50, "default": 400, "description": "Pulse length for UI jog buttons." },
+            "defaultSpeed": { "type": "number", "minimum": 0.05, "maximum": 1, "default": 0.5 }
+          }
+        }
+      }
+    },
+    "plugins": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Hot-swappable extension host (AI providers, notification sinks, archive adapters). Plugins run in worker threads and must be explicitly trusted.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "directories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["./data/plugins"],
+          "description": "Scanned at startup and on SIGHUP for manifest.json files."
+        },
+        "trustedPlugins": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Plugin ids allowed to load. Empty = load nothing (secure default)."
+        },
+        "timeoutMs": { "type": "integer", "minimum": 100, "default": 15000 },
+        "workerMemoryMb": { "type": "integer", "minimum": 32, "default": 256 }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "description": "Stable machine identifier (lowercase letters, digits, dash, underscore). Referenced by cameras, layouts, rules and profiles."
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "username": { "type": "string" },
+        "password": {
+          "type": "string",
+          "x-secret": true,
+          "description": "Use ${ENV_VAR}; resolved at load time and redacted from logs and `config print`."
+        }
+      }
+    },
+    "streamProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["video"],
+      "properties": {
+        "description": { "type": "string", "maxLength": 300 },
+        "purpose": { "type": "string", "enum": ["record", "live", "detect"], "description": "Informational hint; any profile may be used for any role." },
+        "copy": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remux without re-encoding. Requires video.codec=copy or is implied by it. This is what keeps direct-to-disk recording at ~0% CPU."
+        },
+        "video": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["codec"],
+          "properties": {
+            "codec": { "type": "string", "enum": ["copy", "h264", "h265", "vp8", "vp9", "av1", "mjpeg"] },
+            "width": { "type": "integer", "minimum": 16, "maximum": 7680, "multipleOf": 2 },
+            "height": { "type": "integer", "minimum": 16, "maximum": 4320, "multipleOf": 2 },
+            "fps": { "type": "number", "minimum": 1, "maximum": 60 },
+            "bitrateKbps": { "type": "integer", "minimum": 16, "maximum": 50000 },
+            "maxBitrateKbps": { "type": "integer", "minimum": 16, "maximum": 50000 },
+            "gopSeconds": { "type": "number", "minimum": 0.1, "maximum": 10, "default": 2 },
+            "preset": { "type": "string", "enum": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"] },
+            "profile": { "type": "string", "enum": ["baseline", "main", "high"] },
+            "pixelFormat": { "type": "string", "enum": ["yuv420p", "yuvj420p", "nv12"] },
+            "hardwareAcceleration": { "type": "string", "enum": ["none", "auto", "vaapi", "nvenc", "qsv", "videotoolbox"], "default": "auto" },
+            "bframes": { "type": "integer", "minimum": 0, "maximum": 4 },
+            "rotation": { "type": "integer", "enum": [0, 90, 180, 270], "default": 0 }
+          }
+        },
+        "audio": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "codec": { "type": "string", "enum": ["copy", "aac", "opus", "none"], "default": "aac" },
+            "bitrateKbps": { "type": "integer", "minimum": 8, "maximum": 512, "default": 96 },
+            "sampleRate": { "type": "integer", "enum": [8000, 16000, 22050, 44100, 48000], "default": 44100 },
+            "channels": { "type": "integer", "enum": [1, 2], "default": 1 }
+          }
+        },
+        "container": { "type": "string", "enum": ["mkv", "mp4", "fmp4", "webm", "mpegts"], "default": "mkv" },
+        "latency": {
+          "type": "string",
+          "enum": ["low", "balanced", "quality"],
+          "default": "low",
+          "description": "low drops B-frames and shrinks muxer buffers for sub-200ms WebRTC; quality favours compression efficiency."
+        }
+      }
+    },
+    "streamSource": {
+      "oneOf": [
+        { "$ref": "#/$defs/sourceRtsp" },
+        { "$ref": "#/$defs/sourceRtmp" },
+        { "$ref": "#/$defs/sourceHttp" },
+        { "$ref": "#/$defs/sourceOnvif" },
+        { "$ref": "#/$defs/sourceUsb" },
+        { "$ref": "#/$defs/sourceFile" }
+      ]
+    },
+    "sourceRtsp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "url"],
+      "properties": {
+        "type": { "const": "rtsp" },
+        "url": { "type": "string", "pattern": "^rtsps?://[^\\s]+$" },
+        "transport": { "type": "string", "enum": ["tcp", "udp", "auto"], "default": "tcp" },
+        "credentials": { "$ref": "#/$defs/credentials" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120, "default": 10 }
+      }
+    },
+    "sourceRtmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "url"],
+      "properties": {
+        "type": { "const": "rtmp" },
+        "url": { "type": "string", "pattern": "^rtmps?://[^\\s]+$" },
+        "live": { "type": "boolean", "default": true, "description": "Set false to read a finished RTMP file instead of a live feed." },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120, "default": 10 }
+      }
+    },
+    "sourceHttp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "url"],
+      "properties": {
+        "type": { "const": "http" },
+        "url": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+        "format": { "type": "string", "enum": ["auto", "mjpeg", "h264", "h265"], "default": "auto" },
+        "auth": { "type": "string", "enum": ["none", "basic", "digest"], "default": "none" },
+        "credentials": { "$ref": "#/$defs/credentials" },
+        "snapshotUrl": { "type": "string", "pattern": "^https?://[^\\s]+$", "description": "Still-image endpoint used for thumbnails and AI snapshots when the stream is expensive to decode." },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 120, "default": 10 }
+      }
+    },
+    "sourceOnvif": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "host"],
+      "properties": {
+        "type": { "const": "onvif" },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 80 },
+        "credentials": { "$ref": "#/$defs/credentials" },
+        "profileToken": { "type": "string", "description": "ONVIF media profile to pull. Omit to use the first profile reported by the camera." },
+        "streamUriOverride": { "type": "string", "description": "Skip GetStreamUri and use this RTSP URL while still using ONVIF for PTZ/events." }
+      }
+    },
+    "sourceUsb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "device"],
+      "properties": {
+        "type": { "const": "usb" },
+        "device": { "type": "string", "description": "Device path (/dev/video0), DirectShow name (video=Integrated Camera) or AVFoundation index (0)." },
+        "inputFormat": { "type": "string", "enum": ["v4l2", "dshow", "avfoundation"], "default": "v4l2" },
+        "resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "width": { "type": "integer", "minimum": 16, "default": 1280 },
+            "height": { "type": "integer", "minimum": 16, "default": 720 }
+          }
+        },
+        "fps": { "type": "number", "minimum": 1, "maximum": 60, "default": 30 },
+        "pixelFormat": { "type": "string", "default": "mjpeg" }
+      }
+    },
+    "sourceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": { "const": "file" },
+        "path": { "type": "string" },
+        "loop": { "type": "boolean", "default": false },
+        "realtime": { "type": "boolean", "default": true, "description": "Throttle to native frame rate instead of decoding as fast as possible." },
+        "startSeconds": { "type": "number", "minimum": 0, "default": 0 }
+      }
+    },
+    "recordingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "mode": {
+          "type": "string",
+          "enum": ["off", "continuous", "motion", "alert", "scheduled"],
+          "default": "motion",
+          "description": "alert = only rules with a record action start a clip; scheduled = record inside scheduleIds windows."
+        },
+        "profile": { "$ref": "#/$defs/id" },
+        "preBufferSeconds": { "type": "integer", "minimum": 0, "maximum": 30, "description": "Rolling memory cache replayed into the clip so the event is not cut off. 0 = use global default." },
+        "postRollSeconds": { "type": "integer", "minimum": 0, "maximum": 600, "default": 10 },
+        "segmentMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "scheduleIds": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "audio": { "type": "boolean", "default": false },
+        "maxFileSizeMb": { "type": "integer", "minimum": 16, "description": "Force a segment split before this size, protecting FAT/exFAT targets." },
+        "maxDurationMinutes": { "type": "integer", "minimum": 1, "description": "Optional upper bound for a single event-driven clip." }
+      }
+    },
+    "motionOverride": {
+      "$ref": "#/properties/motion",
+      "description": "Camera-level override of the global motion settings; omitted fields inherit."
+    },
+    "cameraAiConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "providerId": { "$ref": "#/$defs/id" },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["person"],
+          "description": "Only detections with these labels raise AI events. Empty = every label the provider returns."
+        },
+        "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
+        "intervalMs": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 1000, "description": "Minimum gap between AI requests for this camera." },
+        "cropToMotion": { "type": "boolean", "default": true, "description": "Send only the motion bounding box to the AI service (cheaper and more accurate)." },
+        "saveSnapshots": { "type": "boolean", "default": true },
+        "snapshotOnAlert": { "type": "boolean", "default": true }
+      }
+    },
+    "ptzConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "profileToken": { "type": "string" },
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+              "pan": { "type": "number", "minimum": -1, "maximum": 1, "default": 0 },
+              "tilt": { "type": "number", "minimum": -1, "maximum": 1, "default": 0 },
+              "zoom": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+              "token": { "type": "string", "description": "Camera-side preset token discovered over ONVIF, if already stored on the device." }
+            }
+          }
+        },
+        "patrol": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "presets": { "type": "array", "items": { "type": "string" }, "description": "Preset names visited in order." },
+            "dwellSeconds": { "type": "integer", "minimum": 2, "default": 15 },
+            "randomize": { "type": "boolean", "default": false },
+            "scheduleIds": { "type": "array", "items": { "$ref": "#/$defs/id" } }
+          }
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "when", "then"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "enabled": { "type": "boolean", "default": true },
+        "priority": { "type": "integer", "default": 100, "description": "Lower runs first when several rules match the same event." },
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "All populated conditions must match (AND). Empty cameraIds/events mean 'any'.",
+          "properties": {
+            "cameraIds": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "motion",
+                  "ai.object",
+                  "ai.face",
+                  "ai.lpr",
+                  "camera.online",
+                  "camera.offline",
+                  "storage.warning",
+                  "storage.critical"
+                ]
+              },
+              "default": ["motion"],
+              "description": "Exact event kinds to match. ai.* requires the camera's AI provider to emit that detection."
+            },
+            "ai": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "labels": { "type": "array", "items": { "type": "string" } },
+                "minConfidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                "providerIds": { "type": "array", "items": { "$ref": "#/$defs/id" } }
+              }
+            },
+            "scheduleIds": { "type": "array", "items": { "$ref": "#/$defs/id" }, "description": "Rule fires only inside these schedules." },
+            "outsideScheduleIds": { "type": "array", "items": { "$ref": "#/$defs/id" }, "description": "Rule fires only outside these schedules." },
+            "minDurationSeconds": { "type": "number", "minimum": 0, "default": 0, "description": "Motion must persist this long before the rule fires (reduces wind/insect noise)." },
+            "cooldownSeconds": { "type": "integer", "minimum": 0, "default": 60 }
+          }
+        },
+        "then": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "record": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Start an event clip (this is alert-triggered recording).",
+              "properties": {
+                "enabled": { "type": "boolean", "default": true },
+                "seconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30 },
+                "profile": { "$ref": "#/$defs/id" }
+              }
+            },
+            "snapshot": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean", "default": true },
+                "annotate": { "type": "boolean", "default": true, "description": "Draw detection boxes and labels onto the saved JPEG." }
+              }
+            },
+            "notify": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "channels": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+                "severity": { "type": "string", "enum": ["info", "warning", "critical"], "default": "warning" },
+                "title": { "type": "string", "maxLength": 200 },
+                "message": { "type": "string", "maxLength": 2000, "description": "Supports {cameraName}, {label}, {confidence}, {time} placeholders." },
+                "attachSnapshot": { "type": "boolean", "default": true }
+              }
+            },
+            "ptz": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["preset"],
+              "properties": {
+                "cameraId": { "$ref": "#/$defs/id" },
+                "preset": { "type": "string" }
+              }
+            },
+            "script": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path"],
+              "description": "Executed without a shell. Receives the event JSON on stdin and EVENT_* environment variables.",
+              "properties": {
+                "path": { "type": "string" },
+                "args": { "type": "array", "items": { "type": "string" } },
+                "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 300, "default": 30 }
+              }
+            },
+            "markEvent": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "label": { "type": "string", "maxLength": 60 },
+                "tags": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "notificationChannel": {
+      "oneOf": [
+        { "$ref": "#/$defs/channelWebhook" },
+        { "$ref": "#/$defs/channelEmail" },
+        { "$ref": "#/$defs/channelMqtt" },
+        { "$ref": "#/$defs/channelTelegram" }
+      ]
+    },
+    "channelWebhook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "webhook" },
+        "url": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+        "method": { "type": "string", "enum": ["POST", "PUT"], "default": "POST" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "bodyTemplate": { "type": "string", "description": "Handlebars-style JSON/text template. Empty sends the standard event envelope." },
+        "hmacSecret": { "type": "string", "x-secret": true, "description": "When set, the request carries X-iCamify-Signature: sha256=<hmac>." },
+        "timeoutMs": { "type": "integer", "minimum": 500, "default": 10000 }
+      }
+    },
+    "channelEmail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "smtp", "to"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "email" },
+        "smtp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["host", "from"],
+          "properties": {
+            "host": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 587 },
+            "secure": { "type": "boolean", "default": true },
+            "username": { "type": "string" },
+            "password": { "type": "string", "x-secret": true },
+            "from": { "type": "string" }
+          }
+        },
+        "to": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "subjectTemplate": { "type": "string", "default": "[iCamify] {cameraName}: {label}" }
+      }
+    },
+    "channelMqtt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "url", "topic"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "mqtt" },
+        "url": { "type": "string", "pattern": "^(mqtt|mqtts|ws|wss)://[^\\s]+$" },
+        "topic": { "type": "string", "minLength": 1 },
+        "qos": { "type": "integer", "enum": [0, 1, 2], "default": 1 },
+        "retain": { "type": "boolean", "default": false },
+        "username": { "type": "string" },
+        "password": { "type": "string", "x-secret": true },
+        "homeAssistantDiscovery": { "type": "boolean", "default": false }
+      }
+    },
+    "channelTelegram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "botToken", "chatId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "telegram" },
+        "botToken": { "type": "string", "x-secret": true },
+        "chatId": { "type": "string" },
+        "parseMode": { "type": "string", "enum": ["none", "MarkdownV2", "HTML"], "default": "HTML" }
+      }
+    },
+    "aiProvider": {
+      "oneOf": [
+        { "$ref": "#/$defs/providerCodeProject" },
+        { "$ref": "#/$defs/providerDeepStack" },
+        { "$ref": "#/$defs/providerGenericHttp" },
+        { "$ref": "#/$defs/providerPlugin" }
+      ]
+    },
+    "providerCodeProject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "codeproject-ai" },
+        "url": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+        "apiKey": { "type": "string", "x-secret": true },
+        "endpoint": { "type": "string", "default": "/v1/vision/detection" },
+        "capabilities": { "type": "array", "items": { "type": "string", "enum": ["object", "face", "lpr", "scene"] }, "default": ["object"] },
+        "timeoutMs": { "type": "integer", "minimum": 500, "default": 8000 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 16, "default": 2 }
+      }
+    },
+    "providerDeepStack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "deepstack" },
+        "url": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+        "apiKey": { "type": "string", "x-secret": true },
+        "mode": { "type": "string", "enum": ["object", "face", "scene", "lpr"], "default": "object" },
+        "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.4 },
+        "capabilities": { "type": "array", "items": { "type": "string", "enum": ["object", "face", "lpr", "scene"] }, "default": ["object"] },
+        "timeoutMs": { "type": "integer", "minimum": 500, "default": 8000 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 }
+      }
+    },
+    "providerGenericHttp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "url", "response"],
+      "description": "Bring-your-own AI endpoint. POST a JPEG (multipart or base64 JSON) and map the response with dot/bracket paths.",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "generic-http" },
+        "url": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+        "method": { "type": "string", "enum": ["POST", "PUT"], "default": "POST" },
+        "contentType": { "type": "string", "enum": ["json", "multipart"], "default": "json" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "requestTemplate": { "type": "string", "description": "Optional JSON body template; {{image}} is replaced by base64 JPEG, {{minConfidence}} by the threshold." },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["detectionsPath", "labelPath", "confidencePath", "box"],
+          "properties": {
+            "detectionsPath": { "type": "string", "description": "Path to the detections array, e.g. predictions or result.items" },
+            "labelPath": { "type": "string", "description": "Path within each detection, e.g. label" },
+            "confidencePath": { "type": "string" },
+            "box": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "width", "height"],
+              "properties": {
+                "x": { "type": "string" },
+                "y": { "type": "string" },
+                "width": { "type": "string" },
+                "height": { "type": "string" },
+                "normalized": { "type": "boolean", "default": false }
+              }
+            }
+          }
+        },
+        "capabilities": { "type": "array", "items": { "type": "string", "enum": ["object", "face", "lpr", "scene"] }, "default": ["object"] },
+        "timeoutMs": { "type": "integer", "minimum": 500, "default": 8000 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 }
+      }
+    },
+    "providerPlugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "pluginId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "enabled": { "type": "boolean", "default": true },
+        "type": { "const": "plugin" },
+        "pluginId": { "type": "string", "minLength": 1 },
+        "config": { "type": "object", "additionalProperties": true },
+        "capabilities": { "type": "array", "items": { "type": "string", "enum": ["object", "face", "lpr", "scene"] }, "default": ["object"] },
+        "timeoutMs": { "type": "integer", "minimum": 500, "default": 15000 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 }
+      }
+    },
+    "archiveS3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "bucket"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": { "const": "s3" },
+        "enabled": { "type": "boolean", "default": true },
+        "endpoint": { "type": "string", "description": "S3-compatible endpoint (MinIO, Backblaze, AWS). Omit for AWS." },
+        "region": { "type": "string", "default": "us-east-1" },
+        "bucket": { "type": "string" },
+        "prefix": { "type": "string", "default": "icamify/" },
+        "accessKeyId": { "type": "string", "x-secret": true },
+        "secretAccessKey": { "type": "string", "x-secret": true },
+        "forcePathStyle": { "type": "boolean", "default": true },
+        "storageClass": { "type": "string", "enum": ["STANDARD", "STANDARD_IA", "ONEZONE_IA", "GLACIER_IR"], "default": "STANDARD_IA" },
+        "deleteAfterUpload": { "type": "boolean", "default": true }
+      }
+    },
+    "archiveSftp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "host", "remoteDir"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": { "const": "sftp" },
+        "enabled": { "type": "boolean", "default": true },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
+        "username": { "type": "string" },
+        "password": { "type": "string", "x-secret": true },
+        "privateKeyPath": { "type": "string" },
+        "remoteDir": { "type": "string" },
+        "deleteAfterUpload": { "type": "boolean", "default": true }
+      }
+    },
+    "archiveLocal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "path"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": { "const": "local" },
+        "enabled": { "type": "boolean", "default": true },
+        "path": { "type": "string", "description": "Second mount point, e.g. a NAS share. Files are moved, then optionally deleted." },
+        "deleteAfterUpload": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

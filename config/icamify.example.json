@@ -1,0 +1,889 @@
+{
+  "$schema": "./icamify.schema.json",
+  "version": "1.0",
+
+  "system": {
+    "server": {
+      "host": "0.0.0.0",
+      "port": 8060,
+      "publicUrl": "http://192.168.1.10:8060",
+      "trustProxy": false
+    },
+    "tls": {
+      "enabled": false
+    },
+    "logging": {
+      "level": "info",
+      "pretty": true,
+      "maxFileMb": 64,
+      "maxFiles": 5,
+      "redactSecrets": true
+    },
+    "timezone": "Europe/Berlin",
+    "workers": {
+      "motion": 2,
+      "ai": 2,
+      "thumbnail": 1
+    },
+    "shutdownGraceSeconds": 20,
+    "healthCheckSeconds": 10,
+    "api": {
+      "basePath": "/api",
+      "corsOrigins": [],
+      "rateLimit": {
+        "windowMs": 60000,
+        "max": 600
+      },
+      "websocket": {
+        "path": "/ws",
+        "heartbeatSeconds": 20,
+        "maxClients": 64
+      }
+    },
+    "web": {
+      "serveStatic": true,
+      "staticDir": "./apps/web/dist"
+    }
+  },
+
+  "auth": {
+    "mode": "local",
+    "allowAnonymousViewing": false,
+    "session": {
+      "secret": "${ICAMIFY_SESSION_SECRET:-dev-only-session-secret-change-me-please-0123456789}",
+      "cookieName": "icamify_session",
+      "ttlHours": 24,
+      "idleTimeoutMinutes": 120,
+      "secureCookie": true,
+      "sameSite": "lax"
+    },
+    "users": [
+      {
+        "id": "admin",
+        "username": "admin",
+        "displayName": "Administrator",
+        "role": "admin",
+        "passwordHash": "$argon2id$v=19$m=65536,t=3,p=4$REPLACE_WITH_RUN_OF_icamify_user_hash$REPLACE_ME",
+        "enabled": true
+      },
+      {
+        "id": "operator",
+        "username": "night-shift",
+        "displayName": "Night Shift",
+        "role": "operator",
+        "passwordHash": "$argon2id$v=19$m=65536,t=3,p=4$REPLACE_WITH_RUN_OF_icamify_user_hash$REPLACE_ME",
+        "enabled": true
+      }
+    ],
+    "apiTokens": [
+      {
+        "id": "homeassistant",
+        "name": "Home Assistant",
+        "tokenHash": "${HOMEASSISTANT_TOKEN_HASH:-0000000000000000000000000000000000000000000000000000000000000000}",
+        "role": "viewer",
+        "expiresAt": "2027-12-31"
+      }
+    ],
+    "lockout": {
+      "maxAttempts": 8,
+      "windowMinutes": 15,
+      "blockMinutes": 15
+    }
+  },
+
+  "storage": {
+    "rootDir": "./data",
+    "recordingsDir": "recordings",
+    "snapshotsDir": "snapshots",
+    "stateDir": "state",
+    "tempDir": "tmp",
+    "format": "mkv",
+    "filenameTemplate": "{cameraId}/{date}/{time}-{reason}.{ext}",
+    "segmentMinutes": 15,
+    "preBufferSeconds": 5,
+    "preBufferMaxMemoryMb": 768,
+    "snapshot": {
+      "format": "jpg",
+      "quality": 85,
+      "maxWidth": 1280
+    },
+    "defaultVolume": "nvme",
+    "volumes": [
+      {
+        "id": "nvme",
+        "path": "recordings",
+        "maxSizeGb": 500,
+        "maxAgeHours": 168,
+        "minFreeDiskGb": 10,
+        "priority": 10,
+        "cameraIds": ["front-door", "driveway", "lobby"],
+        "archive": {
+          "enabled": true,
+          "providerId": "cold-s3",
+          "afterHours": 24,
+          "keepLocalDays": 7
+        }
+      },
+      {
+        "id": "bulk-hdd",
+        "path": "/mnt/recordings",
+        "maxSizeGb": 2000,
+        "maxAgeHours": 720,
+        "minFreeDiskGb": 20,
+        "priority": 50,
+        "cameraIds": ["backyard", "warehouse"]
+      }
+    ],
+    "purge": {
+      "enabled": true,
+      "intervalSeconds": 300,
+      "strategy": "oldest-first",
+      "batchSize": 50,
+      "dryRun": false,
+      "protectFlagged": true
+    },
+    "diskHealthCheckSeconds": 60,
+    "warnAtPercent": 90,
+    "archiveProviders": [
+      {
+        "id": "cold-s3",
+        "type": "s3",
+        "enabled": true,
+        "endpoint": "${ARCHIVE_S3_ENDPOINT:-}",
+        "region": "eu-central-1",
+        "bucket": "${ARCHIVE_S3_BUCKET:-icamify-archive}",
+        "prefix": "cameras/",
+        "accessKeyId": "${ARCHIVE_S3_ACCESS_KEY:-}",
+        "secretAccessKey": "${ARCHIVE_S3_SECRET_KEY:-}",
+        "forcePathStyle": true,
+        "storageClass": "STANDARD_IA",
+        "deleteAfterUpload": false
+      },
+      {
+        "id": "nas-mirror",
+        "type": "local",
+        "enabled": false,
+        "path": "/mnt/nas/icamify-archive",
+        "deleteAfterUpload": false
+      }
+    ]
+  },
+
+  "streaming": {
+    "profiles": {
+      "record-main": {
+        "description": "Direct-to-disk: copy the camera's main stream, no re-encode, ~0% CPU.",
+        "purpose": "record",
+        "copy": true,
+        "video": { "codec": "copy" },
+        "audio": { "codec": "copy" },
+        "container": "mkv"
+      },
+      "record-main-audio": {
+        "description": "Main stream with a muted AAC track for cameras that only send G.711.",
+        "purpose": "record",
+        "video": { "codec": "copy" },
+        "audio": { "codec": "aac", "bitrateKbps": 64, "sampleRate": 16000, "channels": 1 },
+        "container": "mkv"
+      },
+      "live-sub": {
+        "description": "Grid tile: camera sub-stream transcoded to browser-safe H.264 inside fragmented MP4.",
+        "purpose": "live",
+        "video": {
+          "codec": "h264",
+          "width": 640,
+          "height": 360,
+          "fps": 15,
+          "bitrateKbps": 700,
+          "maxBitrateKbps": 1200,
+          "gopSeconds": 1,
+          "preset": "veryfast",
+          "profile": "main",
+          "pixelFormat": "yuv420p",
+          "hardwareAcceleration": "auto",
+          "bframes": 0
+        },
+        "audio": { "codec": "opus", "bitrateKbps": 32, "sampleRate": 48000, "channels": 1 },
+        "container": "fmp4",
+        "latency": "low"
+      },
+      "live-hd": {
+        "description": "Full-screen single camera at 720p.",
+        "purpose": "live",
+        "video": {
+          "codec": "h264",
+          "width": 1280,
+          "height": 720,
+          "fps": 25,
+          "bitrateKbps": 2500,
+          "maxBitrateKbps": 4000,
+          "gopSeconds": 1,
+          "preset": "veryfast",
+          "profile": "high",
+          "bframes": 0
+        },
+        "audio": { "codec": "aac", "bitrateKbps": 96, "sampleRate": 48000, "channels": 1 },
+        "container": "fmp4",
+        "latency": "low"
+      },
+      "detect-sub": {
+        "description": "Tiny grayscale-friendly stream for the pixel motion engine.",
+        "purpose": "detect",
+        "video": {
+          "codec": "h264",
+          "width": 320,
+          "height": 180,
+          "fps": 5,
+          "bitrateKbps": 200,
+          "maxBitrateKbps": 400,
+          "gopSeconds": 2,
+          "preset": "ultrafast",
+          "pixelFormat": "yuv420p"
+        },
+        "audio": { "codec": "none" },
+        "container": "mpegts",
+        "latency": "low"
+      }
+    },
+    "defaults": {
+      "record": "record-main",
+      "live": "live-sub",
+      "detect": "detect-sub"
+    },
+    "webrtc": {
+      "enabled": true,
+      "iceServers": [
+        { "urls": ["stun:stun.l.google.com:19302"] },
+        {
+          "urls": ["turn:turn.example.com:3478?transport=udp"],
+          "username": "icamify",
+          "credential": "${TURN_CREDENTIAL:-replace-me}"
+        }
+      ],
+      "portRange": { "min": 40000, "max": 40099 },
+      "codecPreference": ["h264", "vp8", "vp9"],
+      "maxBitrateKbps": 4000,
+      "maxViewersPerCamera": 4,
+      "fallbackAfterMs": 4000
+    },
+    "mse": {
+      "enabled": true,
+      "segmentDurationMs": 1000,
+      "windowSegments": 8
+    },
+    "hls": {
+      "enabled": false,
+      "segmentSeconds": 4,
+      "playlistSize": 6
+    },
+    "mjpeg": {
+      "enabled": true,
+      "fps": 5,
+      "width": 640,
+      "quality": 70
+    },
+    "fallbackChain": ["webrtc", "mse", "mjpeg"],
+    "maxConcurrentSessions": 24,
+    "sessionIdleTimeoutSeconds": 60,
+    "onDemandStart": true
+  },
+
+  "motion": {
+    "enabled": true,
+    "intervalMs": 200,
+    "sensitivity": 50,
+    "threshold": 25,
+    "percentThreshold": 1.5,
+    "minBlobPercent": 0.2,
+    "blurRadius": 2,
+    "grayscale": true,
+    "denoise": 1,
+    "zones": {
+      "cols": 8,
+      "rows": 8,
+      "cells": "11111111/11111111/11111110/11111100/11111100/11111110/11111111/11111111",
+      "mode": "include"
+    },
+    "cooldownSeconds": 10,
+    "warmupFrames": 10,
+    "postMotionSeconds": 10
+  },
+
+  "cameras": [
+    {
+      "id": "front-door",
+      "name": "Front Door",
+      "description": "ONVIF Profile S PTZ dome above the porch.",
+      "enabled": true,
+      "groupIds": ["outdoor"],
+      "tags": ["entrance", "ptz"],
+      "streams": {
+        "main": {
+          "type": "onvif",
+          "host": "192.168.1.21",
+          "port": 80,
+          "credentials": {
+            "username": "${FRONT_DOOR_USER:-admin}",
+            "password": "${FRONT_DOOR_PASS:-}"
+          },
+          "profileToken": "profile_main"
+        },
+        "sub": {
+          "type": "rtsp",
+          "url": "rtsp://192.168.1.21:554/stream2",
+          "transport": "tcp",
+          "credentials": {
+            "username": "${FRONT_DOOR_USER:-admin}",
+            "password": "${FRONT_DOOR_PASS:-}"
+          }
+        }
+      },
+      "profiles": {
+        "record": "record-main",
+        "live": "live-sub",
+        "detect": "detect-sub"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "motion",
+        "preBufferSeconds": 8,
+        "postRollSeconds": 15,
+        "segmentMinutes": 10,
+        "audio": false
+      },
+      "motion": {
+        "sensitivity": 60,
+        "zones": {
+          "cols": 8,
+          "rows": 8,
+          "cells": "00000000/00000000/11111111/11111111/11111111/11111111/00000000/00000000",
+          "mode": "include"
+        }
+      },
+      "ai": {
+        "enabled": true,
+        "providerId": "codeproject-objects",
+        "labels": ["person", "package"],
+        "minConfidence": 0.55,
+        "intervalMs": 750,
+        "cropToMotion": true,
+        "saveSnapshots": true,
+        "snapshotOnAlert": true
+      },
+      "ptz": {
+        "enabled": true,
+        "profileToken": "profile_main",
+        "presets": [
+          { "name": "porch", "pan": 0, "tilt": 0.1, "zoom": 0.2 },
+          { "name": "gate", "pan": -0.6, "tilt": -0.1, "zoom": 0.4 },
+          { "name": "driveway", "pan": 0.7, "tilt": -0.2, "zoom": 0.1 }
+        ],
+        "patrol": {
+          "enabled": true,
+          "presets": ["porch", "gate", "driveway"],
+          "dwellSeconds": 20,
+          "randomize": false,
+          "scheduleIds": ["nights"]
+        }
+      },
+      "audio": { "enabled": false, "gainDb": 0 },
+      "overlay": {
+        "enabled": true,
+        "timestamp": true,
+        "cameraName": true,
+        "position": "top-left",
+        "fontSize": 20
+      },
+      "health": {
+        "probeIntervalSeconds": 30,
+        "offlineAfterFailures": 3,
+        "restartBackoffSeconds": 5,
+        "maxBackoffSeconds": 300
+      },
+      "ui": { "order": 10, "accentColor": "#4f8cff" }
+    },
+    {
+      "id": "driveway",
+      "name": "Driveway",
+      "description": "Hikvision turret, continuous recording with LPR.",
+      "enabled": true,
+      "groupIds": ["outdoor"],
+      "tags": ["vehicles", "lpr"],
+      "streams": {
+        "main": {
+          "type": "rtsp",
+          "url": "rtsp://192.168.1.22:554/Streaming/Channels/101",
+          "transport": "tcp",
+          "credentials": {
+            "username": "${DRIVEWAY_USER:-admin}",
+            "password": "${DRIVEWAY_PASS:-}"
+          }
+        },
+        "sub": {
+          "type": "rtsp",
+          "url": "rtsp://192.168.1.22:554/Streaming/Channels/102",
+          "transport": "tcp",
+          "credentials": {
+            "username": "${DRIVEWAY_USER:-admin}",
+            "password": "${DRIVEWAY_PASS:-}"
+          }
+        }
+      },
+      "profiles": {
+        "record": "record-main",
+        "live": "live-hd",
+        "detect": "detect-sub"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "continuous",
+        "segmentMinutes": 15,
+        "maxFileSizeMb": 1024
+      },
+      "motion": {
+        "threshold": 30,
+        "percentThreshold": 2.0,
+        "cooldownSeconds": 20
+      },
+      "ai": {
+        "enabled": true,
+        "providerId": "lpr-agent",
+        "labels": ["vehicle", "license_plate"],
+        "minConfidence": 0.45,
+        "intervalMs": 2000
+      },
+      "overlay": { "enabled": true },
+      "privacyMasks": [
+        { "x": 0.0, "y": 0.0, "width": 0.18, "height": 0.14, "label": "Neighbour window" }
+      ],
+      "health": { "probeIntervalSeconds": 15 },
+      "ui": { "order": 20, "accentColor": "#38bdf8" }
+    },
+    {
+      "id": "backyard",
+      "name": "Backyard",
+      "description": "USB webcam on the garage wall; green foliage filtered out.",
+      "enabled": true,
+      "groupIds": ["outdoor"],
+      "tags": ["usb", "garden"],
+      "streams": {
+        "main": {
+          "type": "usb",
+          "device": "/dev/video0",
+          "inputFormat": "v4l2",
+          "resolution": { "width": 1280, "height": 720 },
+          "fps": 30,
+          "pixelFormat": "mjpeg"
+        }
+      },
+      "profiles": {
+        "record": "record-main",
+        "live": "live-sub",
+        "detect": "detect-sub"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "motion",
+        "preBufferSeconds": 5,
+        "postRollSeconds": 8,
+        "segmentMinutes": 5
+      },
+      "motion": {
+        "sensitivity": 70,
+        "blurRadius": 4,
+        "denoise": 3,
+        "colorFilter": {
+          "enabled": true,
+          "minSaturation": 0.25,
+          "hueRanges": [
+            { "from": 0, "to": 30 },
+            { "from": 200, "to": 260 }
+          ]
+        }
+      },
+      "ui": { "order": 30, "accentColor": "#22c55e" }
+    },
+    {
+      "id": "warehouse",
+      "name": "Warehouse",
+      "description": "RTMP push from a body-worn rig, recorded during shifts only.",
+      "enabled": true,
+      "groupIds": ["indoor"],
+      "tags": ["rtmp", "shift"],
+      "streams": {
+        "main": {
+          "type": "rtmp",
+          "url": "rtmp://0.0.0.0:1935/live/${WAREHOUSE_RTMP_KEY:-warehouse}",
+          "live": true
+        }
+      },
+      "profiles": {
+        "record": "record-main-audio",
+        "live": "live-sub",
+        "detect": "detect-sub"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "scheduled",
+        "scheduleIds": ["work-hours"],
+        "segmentMinutes": 30
+      },
+      "motion": { "enabled": false },
+      "audio": { "enabled": true, "gainDb": 6 },
+      "health": { "probeIntervalSeconds": 20 },
+      "ui": { "order": 40, "accentColor": "#f59e0b" }
+    },
+    {
+      "id": "lobby",
+      "name": "Lobby",
+      "description": "MJPEG door station; alerts only, clips come from rules.",
+      "enabled": true,
+      "groupIds": ["indoor"],
+      "tags": ["mjpeg", "doorbell"],
+      "streams": {
+        "main": {
+          "type": "http",
+          "url": "http://192.168.1.30:8080/video",
+          "format": "mjpeg",
+          "auth": "basic",
+          "credentials": {
+            "username": "viewer",
+            "password": "${LOBBY_PASS:-}"
+          },
+          "snapshotUrl": "http://192.168.1.30:8080/snapshot.jpg"
+        }
+      },
+      "profiles": {
+        "record": "record-main",
+        "live": "live-sub",
+        "detect": "detect-sub"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "alert",
+        "preBufferSeconds": 10,
+        "postRollSeconds": 20,
+        "segmentMinutes": 5
+      },
+      "motion": { "sensitivity": 45 },
+      "ai": {
+        "enabled": true,
+        "providerId": "codeproject-objects",
+        "labels": ["person"],
+        "minConfidence": 0.6
+      },
+      "ui": { "order": 50, "accentColor": "#a855f7" }
+    },
+    {
+      "id": "lab-testclip",
+      "name": "Lab Test Clip",
+      "description": "File source used by integration tests; no recording.",
+      "enabled": false,
+      "groupIds": [],
+      "tags": ["test"],
+      "streams": {
+        "main": {
+          "type": "file",
+          "path": "./data/samples/office.mp4",
+          "loop": true,
+          "realtime": true
+        }
+      },
+      "recording": { "enabled": false, "mode": "off" },
+      "motion": { "enabled": true, "intervalMs": 100 },
+      "ui": { "order": 90 }
+    }
+  ],
+
+  "groups": [
+    { "id": "outdoor", "name": "Outdoor", "order": 10 },
+    { "id": "indoor", "name": "Indoor", "order": 20 }
+  ],
+
+  "layouts": [
+    {
+      "id": "overview",
+      "name": "Overview",
+      "isDefault": true,
+      "columns": 2,
+      "rows": 2,
+      "autoFill": true,
+      "tiles": [
+        { "cameraId": "front-door", "x": 0, "y": 0, "width": 1, "height": 1, "stream": "sub", "muted": true },
+        { "cameraId": "driveway", "x": 1, "y": 0, "width": 1, "height": 1, "stream": "sub", "muted": true },
+        { "cameraId": "backyard", "x": 0, "y": 1, "width": 1, "height": 1, "stream": "sub", "muted": true },
+        { "cameraId": "lobby", "x": 1, "y": 1, "width": 1, "height": 1, "stream": "sub", "muted": false }
+      ]
+    },
+    {
+      "id": "wall",
+      "name": "Video Wall",
+      "isDefault": false,
+      "columns": 3,
+      "rows": 3,
+      "tiles": [
+        { "cameraId": "front-door", "x": 0, "y": 0, "width": 2, "height": 2, "stream": "main", "muted": true },
+        { "cameraId": "driveway", "x": 2, "y": 0, "width": 1, "height": 1, "stream": "sub", "muted": true },
+        { "cameraId": "backyard", "x": 2, "y": 1, "width": 1, "height": 1, "stream": "sub", "muted": true },
+        { "cameraId": "warehouse", "x": 0, "y": 2, "width": 1, "height": 1, "stream": "sub", "muted": true },
+        { "cameraId": "lobby", "x": 1, "y": 2, "width": 2, "height": 1, "stream": "sub", "muted": true }
+      ]
+    }
+  ],
+
+  "schedules": [
+    {
+      "id": "work-hours",
+      "name": "Work hours",
+      "timezone": "Europe/Berlin",
+      "windows": [
+        { "days": ["mon", "tue", "wed", "thu", "fri"], "start": "08:00", "end": "18:00" },
+        { "days": ["sat"], "start": "09:00", "end": "13:00" }
+      ],
+      "exceptions": [
+        { "date": "2026-12-24", "closed": true },
+        { "date": "2026-12-31", "closed": true }
+      ]
+    },
+    {
+      "id": "nights",
+      "name": "Nights",
+      "windows": [
+        { "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "start": "20:00", "end": "06:00" }
+      ]
+    }
+  ],
+
+  "rules": [
+    {
+      "id": "person-at-night",
+      "name": "Person at night",
+      "description": "Night-time person detections trigger a clip, a snapshot, a Telegram alert and aim the PTZ at the gate.",
+      "enabled": true,
+      "priority": 10,
+      "when": {
+        "cameraIds": ["front-door", "driveway"],
+        "events": ["ai.object"],
+        "ai": { "labels": ["person"], "minConfidence": 0.6 },
+        "minDurationSeconds": 0,
+        "cooldownSeconds": 120
+      },
+      "then": {
+        "record": { "enabled": true, "seconds": 45, "profile": "record-main" },
+        "snapshot": { "enabled": true, "annotate": true },
+        "notify": {
+          "channels": ["telegram-alerts"],
+          "severity": "critical",
+          "title": "Person detected",
+          "message": "{cameraName}: {label} ({confidence}%) at {time}",
+          "attachSnapshot": true
+        },
+        "ptz": { "cameraId": "front-door", "preset": "gate" }
+      }
+    },
+    {
+      "id": "plate-logged",
+      "name": "Log licence plates",
+      "enabled": true,
+      "priority": 50,
+      "when": {
+        "cameraIds": ["driveway"],
+        "events": ["ai.lpr"],
+        "ai": { "minConfidence": 0.5 },
+        "cooldownSeconds": 5
+      },
+      "then": {
+        "notify": {
+          "channels": ["automation-webhook"],
+          "severity": "info",
+          "message": "{cameraName}: plate {label} ({confidence}%)"
+        },
+        "markEvent": { "label": "lpr", "tags": ["vehicle"] }
+      }
+    },
+    {
+      "id": "camera-offline",
+      "name": "Camera offline",
+      "enabled": true,
+      "priority": 5,
+      "when": {
+        "events": ["camera.offline"],
+        "cooldownSeconds": 900
+      },
+      "then": {
+        "notify": {
+          "channels": ["ops-email", "mqtt-events"],
+          "severity": "warning",
+          "title": "Camera offline",
+          "message": "{cameraName} stopped responding at {time}"
+        }
+      }
+    },
+    {
+      "id": "disk-pressure",
+      "name": "Disk pressure",
+      "enabled": true,
+      "priority": 1,
+      "when": {
+        "events": ["storage.critical"],
+        "cooldownSeconds": 3600
+      },
+      "then": {
+        "notify": {
+          "channels": ["automation-webhook", "telegram-alerts"],
+          "severity": "critical",
+          "title": "Storage critical",
+          "message": "Free space below threshold; retention is purging oldest segments."
+        }
+      }
+    }
+  ],
+
+  "notifications": {
+    "dedupeSeconds": 30,
+    "channels": [
+      {
+        "id": "telegram-alerts",
+        "name": "Telegram alerts",
+        "enabled": true,
+        "type": "telegram",
+        "botToken": "${TELEGRAM_BOT_TOKEN:-000000000:replace-me}",
+        "chatId": "${TELEGRAM_CHAT_ID:-0}",
+        "parseMode": "HTML"
+      },
+      {
+        "id": "automation-webhook",
+        "name": "Automation webhook",
+        "enabled": true,
+        "type": "webhook",
+        "url": "http://127.0.0.1:8123/api/webhook/icamify",
+        "method": "POST",
+        "headers": { "Content-Type": "application/json" },
+        "hmacSecret": "${ALERT_WEBHOOK_SECRET:-}",
+        "timeoutMs": 8000
+      },
+      {
+        "id": "ops-email",
+        "name": "Ops email",
+        "enabled": false,
+        "type": "email",
+        "smtp": {
+          "host": "${SMTP_HOST:-localhost}",
+          "port": 587,
+          "secure": true,
+          "username": "${SMTP_USER:-}",
+          "password": "${SMTP_PASS:-}",
+          "from": "icamify@example.com"
+        },
+        "to": ["${ALERT_EMAIL_TO:-ops@example.com}"],
+        "subjectTemplate": "[iCamify] {cameraName}: {label}"
+      },
+      {
+        "id": "mqtt-events",
+        "name": "MQTT events",
+        "enabled": false,
+        "type": "mqtt",
+        "url": "mqtt://192.168.1.5:1883",
+        "topic": "icamify/events",
+        "qos": 1,
+        "retain": false,
+        "username": "icamify",
+        "password": "${MQTT_PASS:-}",
+        "homeAssistantDiscovery": true
+      }
+    ]
+  },
+
+  "ai": {
+    "enabled": true,
+    "defaultProviderId": "codeproject-objects",
+    "storeDetectionsDays": 30,
+    "maxDetectionsPerFrame": 50,
+    "providers": [
+      {
+        "id": "codeproject-objects",
+        "name": "CodeProject.AI (objects)",
+        "enabled": true,
+        "type": "codeproject-ai",
+        "url": "${CODEPROJECT_AI_URL:-http://127.0.0.1:32168}",
+        "apiKey": "${CODEPROJECT_AI_KEY:-}",
+        "endpoint": "/v1/vision/detection",
+        "capabilities": ["object"],
+        "timeoutMs": 8000,
+        "concurrency": 2
+      },
+      {
+        "id": "deepstack-faces",
+        "name": "DeepStack (faces)",
+        "enabled": false,
+        "type": "deepstack",
+        "url": "${DEEPSTACK_URL:-http://127.0.0.1:5000}",
+        "apiKey": "${DEEPSTACK_KEY:-}",
+        "mode": "face",
+        "minConfidence": 0.45,
+        "capabilities": ["face"],
+        "timeoutMs": 8000,
+        "concurrency": 1
+      },
+      {
+        "id": "lpr-agent",
+        "name": "Local LPR agent",
+        "enabled": true,
+        "type": "generic-http",
+        "url": "${LPR_AGENT_URL:-http://127.0.0.1:8080}/detect",
+        "method": "POST",
+        "contentType": "json",
+        "headers": { "X-Api-Key": "${LPR_AGENT_KEY:-}" },
+        "requestTemplate": "{\"image\":\"{{image}}\",\"min_confidence\":{{minConfidence}}}",
+        "response": {
+          "detectionsPath": "results",
+          "labelPath": "plate",
+          "confidencePath": "score",
+          "box": { "x": "bbox.x1", "y": "bbox.y1", "width": "bbox.w", "height": "bbox.h" }
+        },
+        "capabilities": ["lpr", "object"],
+        "timeoutMs": 5000,
+        "concurrency": 1
+      },
+      {
+        "id": "yolo-custom",
+        "name": "Custom YOLO plugin",
+        "enabled": false,
+        "type": "plugin",
+        "pluginId": "yolo-custom-plugin",
+        "config": { "modelPath": "./data/models/yolo11n.onnx", "device": "cpu" },
+        "capabilities": ["object"],
+        "timeoutMs": 15000,
+        "concurrency": 1
+      }
+    ]
+  },
+
+  "onvif": {
+    "discovery": {
+      "enabled": true,
+      "intervalSeconds": 300,
+      "multicastAddress": "239.255.255.250",
+      "multicastPort": 3702,
+      "subnets": ["192.168.1.0/24"],
+      "timeoutMs": 3000
+    },
+    "defaults": {
+      "username": "${ONVIF_USER:-admin}",
+      "password": "${ONVIF_PASS:-}",
+      "timeoutMs": 5000
+    },
+    "ptz": {
+      "continuousMoveMs": 400,
+      "defaultSpeed": 0.5
+    }
+  },
+
+  "plugins": {
+    "enabled": true,
+    "directories": ["./plugins", "./data/plugins"],
+    "trustedPlugins": ["yolo-custom-plugin"],
+    "timeoutMs": 15000,
+    "workerMemoryMb": 256
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@icamify/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Configuration contracts, defaults, env resolution, validation and shared primitives for iCamify.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config/index.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  }
+}

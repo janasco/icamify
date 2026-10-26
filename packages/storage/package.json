@@ -1,0 +1,13 @@
+{
+  "name": "@icamify/storage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Recording index, quota enforcement, retention purge and archive adapters.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  }
+}

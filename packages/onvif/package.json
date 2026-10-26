@@ -1,0 +1,13 @@
+{
+  "name": "@icamify/onvif",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WS-Discovery scanner and ONVIF Profile S PTZ client.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  }
+}

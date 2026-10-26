@@ -1,0 +1,20 @@
+{
+  "id": "yolo-custom-plugin",
+  "name": "Custom YOLO provider",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "kind": "ai-provider",
+  "entry": "./src/index.ts",
+  "runtime": "worker",
+  "capabilities": ["object"],
+  "description": "Example hot-loadable AI provider: forwards JPEG frames to a local inference service and maps its JSON response.",
+  "configSchema": {
+    "type": "object",
+    "required": ["endpoint"],
+    "properties": {
+      "endpoint": { "type": "string" },
+      "apiKey": { "type": "string", "x-secret": true },
+      "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.35 }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "icamify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted, modular NVR/VMS with FFmpeg ingestion, WebRTC live view, motion/AI eventing and retention management.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "plugins/*"
+  ],
+  "bin": {
+    "icamify": "./apps/server/src/cli.ts"
+  },
+  "scripts": {
+    "icamify": "node apps/server/src/cli.ts",
+    "config:validate": "node apps/server/src/cli.ts config validate",
+    "config:print": "node apps/server/src/cli.ts config print",
+    "config:schema": "node apps/server/src/cli.ts config schema",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test packages/core/test/*.test.ts apps/server/test/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

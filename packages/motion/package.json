@@ -1,0 +1,13 @@
+{
+  "name": "@icamify/motion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pixel-differencing motion engine with zone masks, blob filtering and event debouncing.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  }
+}

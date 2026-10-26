@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# runtime state (recordings, snapshots, sqlite, logs, hot-loaded plugins)
+data/
+*.log
+
+# secrets & local overrides
+.env
+.env.*
+!.env.example
+config/icamify.local.json
+config/*.secret.json
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

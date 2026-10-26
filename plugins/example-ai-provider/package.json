@@ -1,0 +1,13 @@
+{
+  "name": "@icamify/plugin-example-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference implementation of the iCamify AI provider plugin contract.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/ai": "*"
+  }
+}

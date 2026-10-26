@@ -1,0 +1,13 @@
+{
+  "name": "@icamify/media",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FFmpeg ingestion, remux/transcode profiles, recording and pre-buffer pipeline.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  }
+}

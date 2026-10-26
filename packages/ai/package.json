@@ -1,0 +1,13 @@
+{
+  "name": "@icamify/ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Unified AI gateway with CodeProject.AI, DeepStack, generic HTTP and plugin providers.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  }
+}
