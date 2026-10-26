@@ -1,0 +1,22 @@
+{
+  "name": "@icamify/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "iCamify web console: camera grid, MSE/MJPEG live view, dashboards.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0",
+    "vue-tsc": "^3.0.0"
+  }
+}

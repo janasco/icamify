@@ -410,7 +410,7 @@ export function buildLiveArgs(options: LiveBuildOptions): BuildResult {
     const args = withGlobal(options, [], input.args);
     args.push('-map', '0:v:0', '-an', '-sn');
     const filters: string[] = [];
-    if (profile.video.fps !== undefined) filters.push(`fps=${profile.video.fps}`);
+    if (fps !== undefined) filters.push(`fps=${fps}`);
     const size = targetSize(options.width ?? profile.video.width, options.height ?? profile.video.height);
     if (size !== undefined) filters.push(`scale=${size}`);
     if (filters.length > 0) args.push('-vf', filters.join(','));

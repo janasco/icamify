@@ -245,7 +245,9 @@ describe('IngestSupervisor', () => {
 
     supervisor.start();
     await waitUntil(() => progress.length > 0);
-    assert.deepEqual(progress, ['1:280']);
+    // The frame number comes from FFmpeg's own `frame=` field, not a local tick
+    // counter, so progress reflects what the encoder actually processed.
+    assert.deepEqual(progress, ['7:280']);
     await supervisor.stop();
   });
 });

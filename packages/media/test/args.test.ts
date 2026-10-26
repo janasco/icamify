@@ -296,7 +296,7 @@ describe('progress parsing', () => {
     const frames = parser.push('bitrate=1500.0kbits/s\nout_time_us=4000000\ntotal_size=750000\nspeed=1.02x\nprogress=continue\n');
     assert.equal(frames.length, 1);
     assert.deepEqual(frames[0], {
-      frame: 1,
+      frame: 12,
       fps: 25,
       bitrateKbps: 1500,
       outTimeMs: 4000,

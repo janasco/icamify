@@ -14,21 +14,27 @@ import {
 } from '@icamify/core';
 import type { PipelinePurpose } from '@icamify/media';
 import { runDoctor, runIngest, runProbe, type CommonCommandOptions } from './commands/diagnostics.ts';
+import { runServe } from './commands/serve.ts';
+import { runUserHash } from './commands/user.ts';
 
 const PROGRAM = 'icamify';
 
 const HELP = `${PROGRAM} ${CORE_VERSION} — self-hosted NVR/VMS
 
 Usage:
+  ${PROGRAM} serve          [--config <path>] [--host <addr>] [--port <n>] [--static-dir <path>]
   ${PROGRAM} doctor         [--config <path>] [--json]
   ${PROGRAM} probe          --camera <id> [--stream main|sub] [--json]
   ${PROGRAM} ingest         --camera <id> --purpose record|live|detect [--dry-run] [--seconds <n>]
   ${PROGRAM} config validate [--config <path>] [--json] [--quiet]
   ${PROGRAM} config print    [--config <path>] [--show-secrets]
   ${PROGRAM} config schema   [--output <path>]
+  ${PROGRAM} user hash
   ${PROGRAM} --help | --version
 
 Commands:
+  serve             Run the NVR: HTTP API, WebSocket hub, live streaming and the console.
+                    This is the normal way to start iCamify.
   doctor            Check Node, config, FFmpeg, encoders and storage before starting.
   probe             Run ffprobe against one camera stream and print what it found.
   ingest            Run one camera pipeline in the foreground. With --dry-run it
@@ -37,6 +43,8 @@ Commands:
                     Exits 1 when there is an error; warnings do not fail.
   config print      Print the fully resolved configuration with secrets redacted.
   config schema     Print (or write) the JSON Schema used for validation.
+  user hash         Read a password from stdin and print an argon2id hash for
+                    auth.users[].passwordHash. Passwords are never taken from argv.
 
 Options:
   -c, --config <path>   Configuration file (default: $ICAMIFY_CONFIG or
@@ -48,6 +56,9 @@ Options:
       --seconds <n>     Stop the pipeline after n seconds (default: until Ctrl-C).
       --ffmpeg <path>   FFmpeg binary (default: $ICAMIFY_FFMPEG_PATH or PATH).
       --ffprobe <path>  ffprobe binary (default: $ICAMIFY_FFPROBE_PATH or PATH).
+      --host <addr>     Bind address for "serve" (default: system.server.host).
+      --port <n>        Port for "serve" (default: system.server.port).
+      --static-dir <p>  Console build directory served by "serve".
       --json            Machine-readable output for doctor, probe and validate.
       --quiet           Suppress per-stream progress and FFmpeg stderr lines.
       --show-secrets    Include secret values in "config print" output. Avoid in
@@ -77,6 +88,9 @@ interface ParsedArgs {
   dryRun: boolean;
   ffmpeg?: string;
   ffprobe?: string;
+  host?: string;
+  port?: string;
+  staticDir?: string;
   help: boolean;
   version: boolean;
 }
@@ -98,6 +112,9 @@ function parseCliArgs(argv: string[]): ParsedArgs {
       'dry-run': { type: 'boolean', default: false },
       ffmpeg: { type: 'string' },
       ffprobe: { type: 'string' },
+      host: { type: 'string' },
+      port: { type: 'string' },
+      'static-dir': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },
@@ -117,6 +134,9 @@ function parseCliArgs(argv: string[]): ParsedArgs {
     dryRun: values['dry-run'] ?? false,
     ffmpeg: values.ffmpeg,
     ffprobe: values.ffprobe,
+    host: values.host,
+    port: values.port,
+    staticDir: values['static-dir'],
     help: values.help ?? false,
     version: values.version ?? false,
   };
@@ -305,6 +325,28 @@ async function main(argv: string[]): Promise<number> {
 
   const [group, action, ...rest] = args.command;
 
+  if (group === 'serve') {
+    if (action !== undefined) return usageError(`serve takes no subcommand (got "${action}")`);
+    let port: number | undefined;
+    if (args.port !== undefined) {
+      const parsed = Number(args.port);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return usageError('--port must be an integer between 1 and 65535');
+      port = parsed;
+    }
+    return runServe({
+      ...commonOptions(args),
+      ...(args.host === undefined ? {} : { host: args.host }),
+      ...(port === undefined ? {} : { port }),
+      ...(args.staticDir === undefined ? {} : { staticDir: args.staticDir }),
+    });
+  }
+
+  if (group === 'user') {
+    if (action !== 'hash') return usageError(`unknown user command "${action ?? ''}". Available: user hash.`);
+    if (rest.length > 0) return usageError(`unexpected arguments: ${rest.join(' ')}`);
+    return runUserHash();
+  }
+
   if (group === 'doctor') {
     if (action !== undefined) return usageError(`doctor takes no subcommand (got "${action}")`);
     return runDoctor(commonOptions(args));
@@ -349,7 +391,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   return usageError(
-    `unknown command "${args.command.join(' ')}". Available: doctor, probe, ingest, config.`,
+    `unknown command "${args.command.join(' ')}". Available: serve, doctor, probe, ingest, config, user.`,
   );
 }
 

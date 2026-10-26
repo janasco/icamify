@@ -6,8 +6,9 @@ is built as a single backend process supervising FFmpeg, plus a zero-plugin HTML
 frontend.
 
 This document is the map: repository layout, module boundaries, data flows and
-the phase plan. The configuration contract is specified separately in
-[configuration.md](./configuration.md).
+the phase plan. The configuration contract is specified in
+[configuration.md](./configuration.md); the HTTP API and streaming protocols in
+[api.md](./api.md).
 
 ---
 
@@ -31,7 +32,7 @@ distributed recording clusters, and analytics beyond object/face/LPR/scene.
 
 ```
                          ┌──────────────────────────────────────────┐
-                         │        Browser (Vue 3 SPA, Phase 2)      │
+                         │          Browser (Vue 3 SPA)             │
                          │  live grid · playback · settings · zones │
                          └───────┬───────────────────┬──────────────┘
                        REST/WS   │                   │ WebRTC / MSE / MJPEG
@@ -87,17 +88,24 @@ icamify/
 │   └── configuration.md             ✅ configuration reference & recipes
 │
 ├── apps/
-│   ├── server/                      ✅ package · 📐 internals
+│   ├── server/                      ✅ HTTP/WS/WebRTC-signaling composition root
 │   │   ├── package.json             ✅ bin: icamify
-│   │   ├── README.md                ✅ composition root + planned layout
+│   │   ├── README.md                ✅ routes, files, operational rules
 │   │   ├── src/
-│   │   │   ├── cli.ts               ✅ config validate | print | schema
-│   │   │   └── index.ts             📐 server bootstrap (Phase 2)
-│   │   ├── test/cli.test.ts         ✅ 6 end-to-end CLI tests
-│   │   └── (planned) src/http/, ws/, webrtc/, events/, supervisor/
+│   │   │   ├── cli.ts               ✅ serve | doctor | probe | ingest | config | user
+│   │   │   ├── serve.ts             ✅ boot order, static console, status push, shutdown
+│   │   │   ├── runtime.ts           ✅ camera read model + snapshots + redaction
+│   │   │   ├── http/                ✅ listener, router, auth, responses, static
+│   │   │   ├── ws/                  ✅ authenticated control hub + typed protocol
+│   │   │   ├── live/                ✅ MSE socket + multipart MJPEG endpoint
+│   │   │   ├── webrtc/signaling.ts  ✅ SDP validation, sessions, ICE, engine seam
+│   │   │   ├── media/live-source.ts ✅ LiveSource → media supervisor bridge
+│   │   │   └── routes/index.ts      ✅ route table, roles, anonymous-viewing rule
+│   │   └── test/                    ✅ 52 tests (auth, HTTP, streams, signaling)
 │   │
-│   └── web/                         🧭 Vue 3 + Vite SPA
-│       └── README.md                ✅ planned views, stores, player ladder
+│   └── web/                         ✅ Vue 3 + Vite console
+│       ├── README.md                ✅ layout, player ladder, conventions
+│       └── src/                     ✅ App, Dashboard, CameraTile, LoginView, live.ts
 │
 ├── packages/
 │   ├── core/                        ✅ configuration engine
@@ -131,7 +139,15 @@ icamify/
 │   │   │   ├── source.ts            ✅ StreamSource → demuxer args, credential injection
 │   │   │   ├── probe.ts             ✅ ffprobe JSON → StreamProbe
 │   │   │   └── supervisor.ts        ✅ per-camera state machine, backoff, health events
-│   │   └── test/                    ✅ 54 tests (argv, toolchain, plans, supervisor)
+│   │   └── test/                    ✅ 61 tests (argv, toolchain, plans, supervisor, processes)
+│   │
+│   ├── stream/                      ✅ live fan-out (fMP4/MJPEG sessions)
+│   │   ├── README.md                ✅ invariants + measured behaviour
+│   │   ├── src/fmp4.ts              ✅ box reader, init/fragment split, codec strings
+│   │   ├── src/jpeg.ts              ✅ MJPEG frame splitter
+│   │   ├── src/live/session.ts      ✅ per-camera fan-out, replay window, backpressure
+│   │   ├── src/live/registry.ts     ✅ global caps, transport availability
+│   │   └── test/                    ✅ 30 tests (no FFmpeg needed)
 │   │
 │   ├── motion/                      📐 pixel motion engine (Phase 3)
 │   │   ├── README.md                ✅ algorithm, planned files, invariants
@@ -181,7 +197,8 @@ seams between phases, so each can be implemented and tested in isolation.
 | `@icamify/ai` | `AiGateway.detect(providerId, request)` | JPEG crops, provider config | `Detection[]` |
 | `@icamify/onvif` | `OnvifScanner`, `PtzClient` | network, credentials | devices, presets, move commands |
 | `@icamify/storage` | `RetentionManager`, `RecordingSegment` | finalized files, quotas | index, deletions, archive uploads |
-| `@icamify/server` | HTTP + WS + WebRTC | all of the above | browser console |
+| `@icamify/stream` | `LiveSession`, `LiveRegistry`, `LiveSource` | FFmpeg stdout, config limits | fMP4 init/fragments, MJPEG frames, viewer stats |
+| `@icamify/server` | HTTP + WS + WebRTC signaling | all of the above | browser console |
 
 ### Dependency rule
 
@@ -213,16 +230,25 @@ sees ~58k pixels instead of 8M.
 ### 5.2 Live view and the transport ladder
 
 ```
-player tile ── POST /api/streams/:camera/ticket ──> short-lived, session-bound ticket
-            ── WS /ws (ticket) ──> webrtc/offer ──> answer + ICE
-            ── if no connected PC after fallbackAfterMs ──> MSE (fMP4) ──> MJPEG
+player tile ── WS /ws (session cookie or bearer) ──> webrtc:offer ──> answer + ICE
+            ── GET /api/system reports webrtc.available:false today ──┐
+                                                                     ▼
+            ── WS /api/cameras/:id/live.ws ──> stream:init, init segment, moof/mdat
+            ── on fatal close ──> GET /api/cameras/:id/live.mjpeg (multipart JPEG)
 ```
 
-- One encoder per camera+profile, fanned out to N viewers; the encoder stops when
-  the last viewer leaves.
-- The signaling socket is authenticated; media flows peer-to-peer or through the
-  configured TURN server. Ports come from `streaming.webrtc.portRange`.
-- Tiles pause when off-screen; the UI re-negotiates on visibility change.
+- One encoder per camera+transport, fanned out to N viewers; it is stopped after
+  the last viewer leaves plus `streaming.sessionIdleTimeoutSeconds`.
+- The control socket is authenticated with the same session cookie or API token as
+  the REST API. Signaling validates SDP, enforces
+  `streaming.webrtc.maxViewersPerCamera`, forwards ICE and expires abandoned
+  sessions after two minutes.
+- The media plane is a `WebRtcMediaEngine` seam. **No engine is registered yet**,
+  so `webrtc:offer` returns `engine-unavailable` with a reason and the console
+  starts at MSE instead of waiting out `fallbackAfterMs`.
+- MSE framing is explicit (JSON init, binary init, binary fragments) so the
+  browser knows the codec before creating its `SourceBuffer`; a pipeline restart
+  re-sends `stream:init` and clients rebuild the source buffer.
 
 ### 5.3 Motion → pre-buffer → recording → AI → rules
 
@@ -288,9 +314,9 @@ See [configuration.md](./configuration.md) for the full reference.
 
 | Boundary | Control |
 | -------- | ------- |
-| HTTP | Session cookie (HttpOnly, SameSite) or `Authorization: Bearer` API token; argon2id password hashes; login lockout; rate limiting. |
-| Mutations | Same-origin check + CSRF token; role check (`admin`, `operator`, `viewer`). |
-| Streams | Per-session, per-camera, short-lived tickets; no camera credentials ever reach the browser. |
+| HTTP | Session cookie (HttpOnly, SameSite, Secure) or `Authorization: Bearer` API token; argon2id password hashes verified with `hash-wasm`; server-side session revocation; per-identity login lockout; per-IP rate limiting. |
+| Mutations | Same-origin `Origin` check for cookie-authenticated writes; role check (`admin`, `operator`, `viewer`). |
+| Streams | Media sockets authenticate with the session cookie or bearer token; camera credentials never reach the browser and FFmpeg argv is redacted. |
 | Media | RTSP/ONVIF credentials from env; never logged, redacted in API responses. |
 | Plugins | Explicit `trustedPlugins` allowlist, worker thread isolation, memory/time limits. Not a sandbox against a malicious plugin — install only code you trust. |
 | Filesystem | Retention resolves and confines paths to configured volumes; no user-supplied paths in deletion code. |
@@ -319,7 +345,8 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | ----- | ----- | ------ |
 | **1a — Foundation** | Repo layout, workspace tooling, config schema + example, typed config loader, env/secret handling, referential checks, zone mask codec, CLI, tests, docs | ✅ complete |
 | **1b — Media bring-up** | `ffmpeg`/`ffprobe` detection and capability probe, argv builders, process supervisor, RTSP/RTMP/HTTP/USB/file ingest, FFprobe → `StreamProbe`, camera health/backoff, `icamify doctor` | ✅ complete |
-| **2 — Live console** | HTTP API + auth, WebSocket hub, WebRTC signaling and session lifecycle, MSE/MJPEG fallback, Vue grid with drag/resize layouts, event feed | planned |
+| **2 — Live console** | HTTP API + auth, control WebSocket, WebRTC signaling and session lifecycle, MSE/MJPEG live view, Vue grid console | ✅ complete (media plane for WebRTC pending) |
+| **2b — WebRTC media** | Register a WebRTC media engine (H.264 RTP ↔ ICE/DTLS), resizable tile spans in the grid editor, HLS segmenter | planned |
 | **3 — Recording & motion** | Segmenter + `.part` atomic rename, pre-buffer replay, motion engine + zone editor, timeline index, recording modes (continuous/motion/alert/scheduled) | planned |
 | **4 — AI, PTZ, alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, rules engine, notification channels (webhook/email/MQTT/Telegram), ONVIF discovery and PTZ presets/patrol | planned |
 | **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), timeline player with motion/AI markers, storage dashboards | planned |
@@ -333,8 +360,16 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   *(Verified against a file source with FFmpeg 7.0.2: probe, copy recording,
   live transcode and detection all ran under the supervisor. Verification
   against a physical RTSP/ONVIF camera is still pending hardware.)*
-- **2** — two browsers watch the same camera through WebRTC with <200ms latency;
-  blocking UDP falls back to MSE visibly; layouts persist across reloads.
+- **2** — two browsers watch the same camera and share one encoder; a fatal
+  transport error falls back to MJPEG visibly; drag order and grid size persist
+  across reloads; the API refuses unauthenticated access and cross-origin cookie
+  mutations. *(Verified with FFmpeg 7.0.2 and a file source: MSE delivered a
+  `avc1.4d4016` init segment plus fragments to two simultaneous sockets, MJPEG and
+  snapshot endpoints returned real JPEGs, and the console bundle was served with
+  CSP. Browser playback and a physical camera are still pending hardware/proxy
+  verification.)*
+- **2b** — WebRTC delivers sub-200 ms glass-to-glass between two browsers, and
+  blocking UDP visibly falls back to MSE.
 - **3** — motion clip includes configured pre-roll; zone exclusions suppress a
   swaying tree; continuous recording survives a forced kill with a playable file.
 - **4** — a person-only rule produces exactly one Telegram alert and one clip;

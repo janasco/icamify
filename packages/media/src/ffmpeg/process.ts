@@ -29,6 +29,11 @@ export interface FfmpegProcessOptions {
    * encoder tree can be signalled. Disable only for tests that fake a child.
    */
   detached?: boolean;
+  /**
+   * Consumes raw stdout (media/JPEG/raw frames). Takes precedence over
+   * `onProgress`: both cannot share stdout, and parsing H.264 as `key=value`
+   * progress lines would silently deliver an empty stream.
+   */
   onStdout?: (chunk: Buffer) => void;
   onProgress?: (frame: ProgressFrame) => void;
   onStderrLine?: (line: string) => void;
@@ -98,7 +103,10 @@ export class ProgressParser {
       return Number.isFinite(value) ? value : undefined;
     };
     const outTimeUs = num('out_time_us');
-    const frame: ProgressFrame = { frame: this.frameCount };
+    // FFmpeg's `frame=` is the encoder's actual frame count; the local counter is
+    // only a report index and is the fallback when the build omits it.
+    const reportedFrame = num('frame');
+    const frame: ProgressFrame = { frame: reportedFrame ?? this.frameCount };
     const fps = num('fps');
     // FFmpeg reports `bitrate=1500.0kbits/s`, so the unit has to be stripped
     // before the value is numeric; a bare value is bits/s.
@@ -163,7 +171,8 @@ export class FfmpegProcess {
     this.stderrRing = [];
     this.killGraceMs = options.killGraceMs ?? 5_000;
     this.detached = options.detached ?? process.platform !== 'win32';
-    if (options.onProgress !== undefined) this.progress = new ProgressParser();
+    // Media and progress share stdout. Media wins, because a live viewer with no
+    // bytes is a worse failure than a missing progress line.
 
     const spawnFn = options.spawn ?? (spawn as unknown as SpawnFn);
     let resolveExit: (result: ExitResult) => void = () => {};
@@ -194,6 +203,10 @@ export class FfmpegProcess {
     }
     this.child = child;
     this.pid = child.pid;
+
+    if (options.onStdout === undefined && options.onProgress !== undefined) {
+      this.progress = new ProgressParser();
+    }
 
     const stderrSplitter = new LineSplitter();
     child.stderr?.setEncoding('utf8');
@@ -226,6 +239,10 @@ export class FfmpegProcess {
 
     child.on('error', (error) => {
       this.spawnError = error;
+      // A failed spawn (ENOENT/EACCES) emits `error` then `close`, never `exit`.
+      // Settling here is what turns "ffmpeg is missing" into a supervisor
+      // restart with a reason instead of a promise that never resolves.
+      this.settle({ code: null, signal: null, spawnError: error });
     });
 
     child.on('exit', (code, signal) => {
@@ -233,6 +250,10 @@ export class FfmpegProcess {
         this.pushStderr(line);
         options.onStderrLine?.(line);
       }
+      this.settle({ code, signal, spawnError: this.spawnError });
+    });
+
+    child.on('close', (code, signal) => {
       this.settle({ code, signal, spawnError: this.spawnError });
     });
   }

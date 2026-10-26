@@ -1,61 +1,67 @@
 # @icamify/web — HTML5 console
 
-**Phase:** 2 (player grid + signaling client), 5 (timeline).
+Zero-plugin Vue 3 SPA built with Vite. Same origin as the API, so the session
+cookie, WebSocket and MSE socket need no CORS configuration.
 
-Zero-plugin Vue 3 SPA built with Vite. It talks to the backend over the REST API
-for CRUD, one WebSocket for events and WebRTC signaling, and WebRTC/fMP4 for
-video. No native codecs, no browser extensions.
+**Phase:** 2 (grid + MSE/MJPEG live view). Timeline, settings and the zone editor
+come later; the console does not link controls for them.
 
-## Planned layout
+## Layout
 
 ```
 src/
-  main.ts
-  App.vue
-  router.ts
-  stores/
-    auth.ts          # session, role, CSRF
-    cameras.ts       # camera list, live status
-    player.ts        # active transport per tile, fallback state
-    events.ts        # motion/AI/storage event feed
-    layout.ts        # grid layout editing (drag, resize, persist)
-  views/
-    LiveView.vue     # grid dashboard
-    PlaybackView.vue # timeline player
-    SettingsView.vue # cameras, profiles, storage, AI, notifications
-    ScannerView.vue  # ONVIF discovery
+  main.ts                    mounts the app
+  App.vue                    boot: /api/auth/me → login or dashboard
+  api.ts                     fetch wrapper (`credentials: same-origin`), ApiError
+  live.ts                    MSE player: WS → MediaSource, live-edge, reconnect
+  types.ts                   API types mirrored by hand
+  style.css                  dark console theme
   components/
-    CameraTile.vue
-    VideoPlayer.vue  # transport ladder: WebRTC -> MSE -> MJPEG
-    GridLayout.vue   # CSS grid, pointer-based drag/resize
-    ZoneEditor.vue   # paint include/exclude motion cells
-    MotionTimeline.vue
-    EventFeed.vue
-    PtzPad.vue
-    StorageGauge.vue
-  lib/
-    api.ts           # typed fetch wrapper
-    signaling.ts     # WebSocket client with reconnect + ticket auth
-    webrtc.ts        # RTCPeerConnection lifecycle, ICE restart
-    mse.ts           # MediaSource append queue
-    mjpeg.ts         # multipart image consumer
+    LoginView.vue            username/password, actionable hints
+    Dashboard.vue            top bar, camera rail, grid, control socket
+    CameraTile.vue           per-tile player, snapshot button, fullscreen
 ```
 
 ## Transport ladder
 
-1. **WebRTC** — sub-second, the default. Offer/answer over the authenticated
-   signaling socket; ICE servers from `streaming.webrtc.iceServers`.
-2. **MSE** — fragmented MP4 over the same socket when WebRTC is blocked.
-3. **MJPEG** — multipart JPEG for locked-down browsers or ancient devices.
+1. **MSE** (default) — `/api/cameras/:id/live.ws`, fragmented MP4. The server
+   sends `stream:init` with the codec string, then the init segment, then one
+   binary frame per fragment.
+2. **MJPEG** — automatic fallback when the socket closes with a fatal reason
+   (`codec-unsupported`, `transport-disabled`, viewer/session limits), when
+   `MediaSource` is missing, or when the codec is unsupported. Uses
+   `/api/cameras/:id/live.mjpeg`.
+3. **WebRTC** — the signaling client is not wired because no media engine is
+   registered yet; `/api/system` reports why, and the footer shows it.
 
-The player starts with WebRTC, and if `streaming.webrtc.fallbackAfterMs` elapses
-without a connected `RTCPeerConnection`, it walks `streaming.fallbackChain` and
-shows a small transport badge. Tiles pause decoding when scrolled out of view.
+`live.ts` keeps playback honest:
 
-## Conventions
+- the playhead is pulled to the live edge when it drifts more than 1.5 s behind;
+- media older than ~30 s is evicted from the `SourceBuffer`, so a 12-hour wall
+  does not grow memory;
+- a dropped socket reconnects with exponential backoff (5 attempts) and a new
+  `stream:init` rebuilds the `MediaSource` (the codec may have changed);
+- `1008` closes are fatal and switch the tile to MJPEG instead of retrying.
 
-- One RTCPeerConnection per visible tile, closed when the tile unmounts; the
-  backend stops the encoder when the last viewer leaves (`onDemandStart`).
-- Grid layouts are stored as cell coordinates (`x`, `y`, `width`, `height`), so
-  the same layout renders on a phone and a video wall.
-- All dates render in `system.timezone`; the timeline is anchored to it.
+## Dashboard behaviour
+
+- Cameras come from `GET /api/cameras`; status changes arrive on `WS /ws`, with a
+  10-second poll only while the socket is down.
+- Grid columns are Auto (1/2/3/4 by camera count) or fixed 1–4.
+- Drag a tile onto another to reorder; double-click for fullscreen; the rail
+  focuses one camera.
+- Preferences persist in `localStorage`: `icamify.columns`, `icamify.order`,
+  `icamify.focus`. Configured layouts seed the initial order and column count.
+
+## Development
+
+```bash
+npm run web:dev      # Vite on :5173, proxies /api and /ws to :8060
+npm run web:build    # production build into apps/web/dist
+npm run web:typecheck
+```
+
+`icamify serve` automatically serves `apps/web/dist` when it exists (override
+with `--static-dir`, disable with `system.web.serveStatic: false`). Paths without
+a file extension fall back to `index.html`; hashed assets under `/assets/` are
+cached immutably, `index.html` is `no-cache`, and responses carry a strict CSP.

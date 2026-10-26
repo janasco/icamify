@@ -60,6 +60,13 @@ export interface PipelinePlanOptions {
   maxFileSizeMb?: number;
   includeAudio?: boolean;
   liveOutput?: 'fmp4' | 'mpegts' | 'mjpeg';
+  /** Fragment duration for MSE (streaming.mse.segmentDurationMs). */
+  segmentDurationMs?: number;
+  /** MJPEG fallback geometry, cadence and quality (ignored for fMP4). */
+  liveWidth?: number;
+  liveHeight?: number;
+  liveFps?: number;
+  mjpegQuality?: number;
   resolvedStreamUri?: string;
 }
 
@@ -112,7 +119,11 @@ export function buildPipelinePlan(
       built = buildLiveArgs({
         ...common,
         output: options.liveOutput ?? 'fmp4',
-        fps: profile.video.fps,
+        fps: options.liveFps ?? profile.video.fps,
+        ...(options.segmentDurationMs === undefined ? {} : { segmentDurationMs: options.segmentDurationMs }),
+        ...(options.liveWidth === undefined ? {} : { width: options.liveWidth }),
+        ...(options.liveHeight === undefined ? {} : { height: options.liveHeight }),
+        ...(options.mjpegQuality === undefined ? {} : { mjpegQuality: options.mjpegQuality }),
       });
       break;
     case 'detect':

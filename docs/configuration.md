@@ -220,7 +220,8 @@ Notes:
 - `session.secret` should be at least 32 random characters and supplied via env.
   If omitted, the server logs a warning and generates a process-local secret, so
   sessions do not survive restarts.
-- Password hashes are argon2id. Plaintext passwords are not accepted.
+- Password hashes are argon2id. Plaintext passwords are not accepted. Generate one with
+  `icamify user hash` (the password is read from stdin, never from argv).
 - API tokens are stored as SHA-256 hashes; the plaintext token is shown once by
   the (Phase 2) token-creation flow.
 

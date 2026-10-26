@@ -1,0 +1,14 @@
+{
+  "name": "@icamify/stream",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live-view fan-out: fragmented MP4 and MJPEG framing, per-camera viewer sessions.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*",
+    "@icamify/media": "*"
+  }
+}
