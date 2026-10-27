@@ -328,6 +328,7 @@ name.
       "enabled": true,
       "iceServers": [{ "urls": ["stun:stun.l.google.com:19302"] }],
       "portRange": { "min": 40000, "max": 40099 },
+      "publicIp": "${WEBRTC_PUBLIC_IP:-}",
       "codecPreference": ["h264", "vp8", "vp9"],
       "maxBitrateKbps": 4000,
       "maxViewersPerCamera": 4,
@@ -350,6 +351,22 @@ name.
 | `latency: low` | Drops B-frames, small muxer buffers |
 | `fallbackChain` | Order the browser tries: WebRTC → MSE → HLS → MJPEG |
 | `onDemandStart` | Live encoders start when the first viewer connects and stop after the last one leaves |
+| `webrtc.publicIp` | NAT address advertised in ICE candidates. Without it a viewer outside the LAN cannot reach the media ports and falls back to MSE |
+| `webrtc.portRange` | UDP range for ICE (`min`/`max` must differ). Forward the same range on the router |
+| `webrtc.iceServers` | STUN or TURN; needed on both sides when the viewer is behind carrier-grade NAT |
+| `webrtc.maxViewersPerCamera` | Cap on simultaneous WebRTC viewers per camera |
+| `webrtc.fallbackAfterMs` | How long the tile negotiates before switching to MSE |
+
+WebRTC carries H.264 only. A live profile whose codec is `h264` (or `copy`) is
+passed through unchanged, so WebRTC costs what the camera costs; a `h265`, `vp9`,
+`av1` or `mjpeg` profile is re-encoded to H.264 for WebRTC viewers, which adds a
+decoder and an encoder per camera. Parameter sets are re-inserted before every
+keyframe (`h264_mp4toannexb`), because a copy of an MP4/RTSP stream otherwise
+carries them only in container metadata and a late joiner never decodes a frame.
+
+`werift` is an optional dependency. `npm install --omit=optional` leaves the
+server working: `/api/system` reports `features.webrtc: false` with a reason and
+the ladder skips straight to MSE.
 
 Avoid `copy` profiles for the live grid unless the camera already emits
 browser-friendly H.264 in a supported container; the browser cannot play every

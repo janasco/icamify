@@ -88,7 +88,7 @@ icamify/
 │   └── configuration.md             ✅ configuration reference & recipes
 │
 ├── apps/
-│   ├── server/                      ✅ HTTP/WS/WebRTC-signaling composition root
+│   ├── server/                      ✅ HTTP/WS/WebRTC composition root
 │   │   ├── package.json             ✅ bin: icamify
 │   │   ├── README.md                ✅ routes, files, operational rules
 │   │   ├── src/
@@ -226,6 +226,7 @@ seams between phases, so each can be implemented and tested in isolation.
 | `@icamify/onvif` | `OnvifScanner`, `PtzClient` | network, credentials | devices, presets, move commands |
 | `@icamify/storage` | `RecordingIndex`, `RetentionEngine`, `ArchiveTarget` | finalized files, quotas | clip/detection/rule rows, tombstones, archive copies |
 | `@icamify/stream` | `LiveSession`, `LiveRegistry`, `LiveSource` | FFmpeg stdout, config limits | fMP4 init/fragments, MJPEG frames, viewer stats |
+| `@icamify/rtc` | `createWebRtcEngine`, `RtpContinuity`, `selectH264` | an `RtpSource` per camera, SDP offers | SRTP video per peer, packet/restart counters |
 | `@icamify/server` | HTTP + WS + WebRTC signaling | all of the above | browser console |
 
 ### Dependency rule
@@ -435,8 +436,8 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | ----- | ----- | ------ |
 | **1a — Foundation** | Repo layout, workspace tooling, config schema + example, typed config loader, env/secret handling, referential checks, zone mask codec, CLI, tests, docs | ✅ complete |
 | **1b — Media bring-up** | `ffmpeg`/`ffprobe` detection and capability probe, argv builders, process supervisor, RTSP/RTMP/HTTP/USB/file ingest, FFprobe → `StreamProbe`, camera health/backoff, `icamify doctor` | ✅ complete |
-| **2 — Live console** | HTTP API + auth, control WebSocket, WebRTC signaling and session lifecycle, MSE/MJPEG live view, Vue grid console | ✅ complete (media plane for WebRTC pending) |
-| **2b — WebRTC media** | Register a WebRTC media engine (H.264 RTP ↔ ICE/DTLS), resizable tile spans in the grid editor, HLS segmenter | planned |
+| **2 — Live console** | HTTP API + auth, control WebSocket, WebRTC signaling and session lifecycle, MSE/MJPEG live view, Vue grid console | ✅ complete |
+| **2b — WebRTC media** | WebRTC media engine (H.264 RTP ↔ ICE/DTLS via `werift`), browser player with visible fallback, demo harness | ✅ complete (resizable tile spans and the HLS segmenter are still pending) |
 | **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
 | **4 — AI & alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, crop-to-motion, label/confidence gating, rules engine, alert clips, webhook delivery (HMAC), console detection overlay and event log | ✅ complete |
 | **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ moves/presets/patrols, PTZ rule action, PTZ pad and discovery dialog in the console | ✅ complete (script action and email/MQTT/Telegram delivery still pending) |
@@ -460,7 +461,11 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   CSP. Browser playback and a physical camera are still pending hardware/proxy
   verification.)*
 - **2b** — WebRTC delivers sub-200 ms glass-to-glass between two browsers, and
-  blocking UDP visibly falls back to MSE.
+  blocking UDP visibly falls back to MSE. *(Verified headlessly against a real
+  server: a `werift` peer received 548 RTP packets with keyframes and SPS/PPS in
+  5 s, the session was traceable through `/api/webrtc`, and the FFmpeg pipeline
+  was a pure H.264 copy. Glass-to-glass latency in two real browsers and the UDP
+  blocking case still need a browser/hardware check.)*
 - **3** — motion clip includes configured pre-roll; zone exclusions suppress a
   swaying tree; continuous recording survives a forced kill with a playable file.
   *(Verified with FFmpeg 7.0.2 and a looping file source: motion opened an event,

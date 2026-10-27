@@ -228,6 +228,59 @@ describe('live args', () => {
     assert.equal(args[indexOfValue(args, '-g') + 1], '25');
   });
 
+  test('rtp egress passes an H.264 camera through and fixes the parameter sets', () => {
+    const result = buildLiveArgs({
+      source: subStream,
+      profile: { ...liveProfile, video: { ...liveProfile.video, codec: 'h264', rotation: 0 } },
+      output: 'rtp',
+      rtp: { port: 42000, payloadType: 96 },
+    });
+    const args = result.args;
+    assert.equal(args[indexOfValue(args, '-c:v') + 1], 'copy');
+    // Without this a browser joining after the first IDR never decodes a frame.
+    assert.equal(args[indexOfValue(args, '-bsf:v') + 1], 'h264_mp4toannexb');
+    assert.equal(args[indexOfValue(args, '-f') + 1], 'rtp');
+    assert.equal(args[indexOfValue(args, '-payload_type') + 1], '96');
+    assert.equal(args.at(-1), 'rtp://127.0.0.1:42000');
+    assert.ok(args.includes('-an'));
+    assert.equal(result.warnings.some((warning) => /Scaling is ignored/.test(warning)), true);
+  });
+
+  test('rtp egress re-encodes a non-H.264 camera to H.264', () => {
+    const h265: StreamProfile = { ...liveProfile, video: { ...liveProfile.video, codec: 'h265', rotation: 0 } };
+    const result = buildLiveArgs({
+      source: subStream,
+      profile: h265,
+      output: 'rtp',
+      rtp: { port: 42001, payloadType: 102, maxBitrateKbps: 2500 },
+    });
+    const args = result.args;
+    assert.equal(args[indexOfValue(args, '-c:v') + 1], 'libx264');
+    assert.equal(args[indexOfValue(args, '-maxrate') + 1], '2500k');
+    assert.ok(args.includes('-tune') && args.includes('zerolatency'));
+    const filter = args[indexOfValue(args, '-vf') + 1] ?? '';
+    assert.match(filter, /scale=1280:720/);
+    assert.equal(result.warnings.some((warning) => /re-encoded to H\.264/.test(warning)), true);
+  });
+
+  test('rtp egress honours a forced transcode and the packet size', () => {
+    const result = buildLiveArgs({
+      source: subStream,
+      profile: { ...liveProfile, video: { ...liveProfile.video, rotation: 0 } },
+      output: 'rtp',
+      rtp: { port: 43000, payloadType: 96, transcode: true, maxPacketSize: 900 },
+    });
+    assert.notEqual(result.args[indexOfValue(result.args, '-c:v') + 1], 'copy');
+    assert.equal(result.args[indexOfValue(result.args, '-pkt_size') + 1], '900');
+  });
+
+  test('rtp egress refuses to start without a port', () => {
+    assert.throws(
+      () => buildLiveArgs({ source: subStream, profile: liveProfile, output: 'rtp' }),
+      (error: unknown) => error instanceof MediaError && /RTP live output/.test(error.message),
+    );
+  });
+
   test('mjpeg fallback has no audio and no fragments', () => {
     const result = buildLiveArgs({
       source: subStream,

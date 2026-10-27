@@ -21,9 +21,11 @@
     "config:print": "node apps/server/src/cli.ts config print",
     "config:schema": "node apps/server/src/cli.ts config schema",
     "typecheck": "tsc --noEmit",
-    "test": "node --test packages/core/test/*.test.ts packages/media/test/*.test.ts packages/motion/test/*.test.ts packages/storage/test/*.test.ts packages/stream/test/*.test.ts packages/ai/test/*.test.ts packages/onvif/test/*.test.ts apps/server/test/*.test.ts",
+    "test": "node --test packages/core/test/*.test.ts packages/media/test/*.test.ts packages/motion/test/*.test.ts packages/storage/test/*.test.ts packages/stream/test/*.test.ts packages/ai/test/*.test.ts packages/onvif/test/*.test.ts packages/rtc/test/*.test.ts apps/server/test/*.test.ts",
     "check": "npm run typecheck && npm run web:typecheck && npm test",
     "serve": "node apps/server/src/cli.ts serve",
+    "demo": "node tools/demo/run.mjs",
+    "demo:rtc": "node tools/demo/rtc-probe.mjs",
     "web:dev": "npm run dev -w @icamify/web",
     "web:build": "npm run build -w @icamify/web",
     "web:typecheck": "npm run typecheck -w @icamify/web"

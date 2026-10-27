@@ -378,7 +378,23 @@ function containerFromTemplate(template: string): NonNullable<StreamProfile['con
 // Live streaming
 // ---------------------------------------------------------------------------
 
-export type LiveOutput = 'fmp4' | 'mpegts' | 'mjpeg';
+export type LiveOutput = 'fmp4' | 'mpegts' | 'mjpeg' | 'rtp';
+
+/** Where the WebRTC engine listens for one camera's RTP. */
+export interface RtpEgressOptions {
+  /** UDP port; the engine binds `127.0.0.1` unless `host` says otherwise. */
+  port: number;
+  payloadType: number;
+  /**
+   * Force an H.264 re-encode. Otherwise an H.264 (or copy) profile is passed
+   * through untouched, which is what keeps WebRTC as cheap as MSE.
+   */
+  transcode?: boolean;
+  maxBitrateKbps?: number;
+  /** RTP payload size; 1200 keeps packets inside a 1280-byte MTU. */
+  maxPacketSize?: number;
+  host?: string;
+}
 
 export interface LiveBuildOptions extends CommonBuildOptions {
   source: StreamSource;
@@ -392,6 +408,8 @@ export interface LiveBuildOptions extends CommonBuildOptions {
   height?: number;
   /** JPEG quality for the MJPEG fallback (2 best … 31 worst). */
   mjpegQuality?: number;
+  /** Required when `output` is `rtp`. */
+  rtp?: RtpEgressOptions;
 }
 
 /**
@@ -416,6 +434,17 @@ export function buildLiveArgs(options: LiveBuildOptions): BuildResult {
     if (filters.length > 0) args.push('-vf', filters.join(','));
     args.push('-c:v', 'mjpeg', '-q:v', String(options.mjpegQuality ?? 5), '-f', 'mjpeg', 'pipe:1');
     return { args, warnings };
+  }
+
+  if (output === 'rtp') {
+    if (options.rtp === undefined) {
+      throw new MediaError(
+        'invalid-argument',
+        'An RTP live output needs a destination port.',
+        'Pass streaming.webrtc port settings through the plan; the engine owns the UDP socket.',
+      );
+    }
+    return buildRtpEgressArgs(options, options.rtp, fps);
   }
 
   const choice = selectVideoEncoder(profile.video, options.hasEncoder);
@@ -455,6 +484,73 @@ export function buildLiveArgs(options: LiveBuildOptions): BuildResult {
     '-f',
     'mp4',
     'pipe:1',
+  );
+  return { args, warnings };
+}
+
+/**
+ * H.264 over RTP for the WebRTC engine.
+ *
+ * Two rules make this work in a browser:
+ * - the H.264 bitstream must carry SPS/PPS before every IDR, which
+ *   `h264_mp4toannexb` does (a copy of an MP4/RTSP stream otherwise has the
+ *   parameter sets only in the container's extradata, so a browser decodes
+ *   nothing);
+ * - a camera that is not H.264 (H.265, VP9, MJPG) has to be re-encoded, because
+ *   the answer only ever advertises H.264.
+ */
+function buildRtpEgressArgs(
+  options: LiveBuildOptions,
+  rtp: RtpEgressOptions,
+  fps: number | undefined,
+): BuildResult {
+  const { profile } = options;
+  const warnings: string[] = [];
+  const input = buildInputArgs(options.source, options);
+  const declaredCodec = profile.video.codec;
+  const copyProfile = profile.copy === true || declaredCodec === 'copy';
+  const passThrough = rtp.transcode !== true && (copyProfile || declaredCodec === 'h264');
+
+  const args = withGlobal(options, [], input.args);
+  args.push('-map', '0:v:0', '-an', '-sn');
+
+  if (passThrough) {
+    if (profile.video.width !== undefined || profile.video.height !== undefined) {
+      warnings.push('Scaling is ignored on a copy profile; the camera resolution is sent as-is to WebRTC viewers.');
+    }
+    args.push('-c:v', 'copy');
+  } else {
+    if (declaredCodec !== 'h264' && !copyProfile) {
+      warnings.push(
+        `WebRTC carries H.264 only: the "${declaredCodec}" live profile is re-encoded to H.264, which costs one decoder and one encoder per camera.`,
+      );
+    }
+    const video = { ...profile.video, codec: 'h264' as const };
+    if (rtp.maxBitrateKbps !== undefined) video.maxBitrateKbps = rtp.maxBitrateKbps;
+    const choice = selectVideoEncoder(video, options.hasEncoder);
+    warnings.push(...choice.warnings);
+    const filters: string[] = [];
+    const size = targetSize(video.width, video.height);
+    if (size !== undefined) filters.push(`scale=${size}`);
+    if (video.rotation !== undefined && video.rotation !== 0) filters.push(transposeFilter(video.rotation));
+    filters.push(...choice.filters);
+    if (filters.length > 0) args.push('-vf', filters.join(','));
+    args.push(...videoCodecArgs(video, choice, { lowLatency: true, fps }));
+    // B-frames add latency with no benefit at a fixed low bitrate.
+    if (choice.family === 'x264' || choice.family === 'x265') args.push('-bf', '0');
+  }
+
+  // Parameter sets before every IDR: without this a viewer that joins later than
+  // the first keyframe sees a permanently black tile.
+  args.push('-bsf:v', 'h264_mp4toannexb');
+  args.push(
+    '-f',
+    'rtp',
+    '-payload_type',
+    String(rtp.payloadType),
+    '-pkt_size',
+    String(Math.max(400, Math.min(1400, rtp.maxPacketSize ?? 1200))),
+    `rtp://${rtp.host ?? '127.0.0.1'}:${rtp.port}`,
   );
   return { args, warnings };
 }

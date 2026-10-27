@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { CORE_VERSION, activeSchedules, loadConfig, type ResolvedIcamifyConfig } from '@icamify/core';
 import { Gateway as AiGateway, jpegSize } from '@icamify/ai';
 import { MediaEngine, locateFfmpeg, versionText, type FfmpegToolchain } from '@icamify/media';
+import { createWebRtcEngine } from '@icamify/rtc';
 import { LiveRegistry } from '@icamify/stream';
 import { Notifier } from './alerts/notifier.ts';
 import { createPluginResolver } from './ai/plugins.ts';
@@ -15,6 +16,7 @@ import { Router } from './http/router.ts';
 import { createAppServer, type AppServer, type ListenResult, type RequestLogEntry } from './http/server.ts';
 import { createLiveStreamHandler } from './live/ws-stream.ts';
 import { createLiveSourceFactory } from './media/live-source.ts';
+import { createRtpSourceFactory } from './media/rtp-source.ts';
 import { MotionService, type MotionServiceEvent } from './motion/service.ts';
 import { OnvifService } from './onvif/service.ts';
 import { RecordingManager, type RecordingHubEvent } from './recording/manager.ts';
@@ -23,7 +25,7 @@ import { RuleEngine, type RuleEngineEvent } from './rules/engine.ts';
 import { CameraRuntime } from './runtime.ts';
 import { resolveStoragePaths } from './storage-paths.ts';
 import { StorageService, type StorageServiceEvent } from './storage/service.ts';
-import { SignalingService } from './webrtc/signaling.ts';
+import { SignalingService, iceServersFor, type WebRtcMediaEngine } from './webrtc/signaling.ts';
 import { WsHub } from './ws/hub.ts';
 
 /**
@@ -46,6 +48,8 @@ export interface StartServerOptions {
   /** Override the console build directory; `false` disables static serving. */
   staticDir?: string | false;
   toolchain?: FfmpegToolchain;
+  /** Test seam: `false` starts the server with no media plane at all. */
+  webrtcEngine?: WebRtcMediaEngine | false;
   log?: (line: string) => void;
 }
 
@@ -56,6 +60,8 @@ export interface RunningServer {
   runtime: CameraRuntime;
   auth: AuthService;
   signaling: SignalingService;
+  /** The media plane; `available` is false when werift is not installed. */
+  webrtc: WebRtcMediaEngine;
   recording: RecordingManager;
   motion: MotionService;
   ai: AiService;
@@ -96,6 +102,29 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   });
 
   const sources = createLiveSourceFactory({ media, config, log });
+
+  // The WebRTC engine is built before the registry so the transport ladder can
+  // report whether the first rung is actually usable. Creating it is cheap: the
+  // first FFmpeg RTP pipeline starts with the first viewer, not at boot.
+  const webrtc: WebRtcMediaEngine =
+    options.webrtcEngine === false
+      ? disabledWebRtcEngine('WebRTC is disabled on this server.')
+      : (options.webrtcEngine ??
+        (await createWebRtcEngine({
+          createSource: createRtpSourceFactory({ media, config, log }),
+          iceServers: iceServersFor(config),
+          ...(config.streaming.webrtc?.publicIp === undefined ? {} : { publicIp: config.streaming.webrtc.publicIp }),
+          ...(config.streaming.webrtc?.portRange === undefined ? {} : { portRange: config.streaming.webrtc.portRange }),
+          log,
+        })));
+  if (!webrtc.available) {
+    log(
+      config.streaming.webrtc?.enabled === false
+        ? 'webrtc: disabled in streaming.webrtc.enabled'
+        : `webrtc: unavailable — ${webrtc.reason ?? 'unknown reason'}`,
+    );
+  }
+
   // The registry is built before the WebSocket hub exists (the hub needs the
   // camera read model), so status pushes are routed through this forwarder.
   let pushStatus: ((cameraId: string) => void) | undefined;
@@ -103,6 +132,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     config,
     camera: (cameraId) => (config.cameras ?? []).find((camera) => camera.id === cameraId),
     createSource: sources,
+    webrtc: {
+      available: webrtc.available && config.streaming.webrtc?.enabled !== false,
+      ...(webrtc.reason === undefined ? {} : { reason: webrtc.reason }),
+    },
     onEvent: (event) => {
       if (event.type === 'error') log(`camera ${event.cameraId}: ${event.message}`);
       if (event.type === 'source-exited') log(`camera ${event.cameraId}: pipeline exited (${event.reason})`);
@@ -285,7 +318,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     ptzSupported: (camera) => onvif.canControl(camera),
   });
   const auth = new AuthService({ auth: config.auth, onWarning: (message) => log(`warn: ${message}`) });
-  const signaling = new SignalingService({ config, log });
+  const signaling = new SignalingService({
+    config,
+    engine: webrtc,
+    allowAnonymous: () => auth.anonymousViewing,
+    log,
+  });
 
   const router = new Router();
   const basePath = config.system.api?.basePath;
@@ -525,6 +563,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           recording.close();
           await registry.shutdown().catch(() => undefined);
           signaling.shutdown();
+          await webrtc.shutdown?.().catch(() => undefined);
           await server.close().catch(() => undefined);
         })(),
         new Promise<void>((resolvePromise) => setTimeout(resolvePromise, graceSeconds * 1000).unref?.()),
@@ -540,6 +579,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runtime,
     auth,
     signaling,
+    webrtc,
     recording,
     motion,
     ai: aiService,
@@ -551,6 +591,18 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     listen,
     broadcastCameras,
     close,
+  };
+}
+
+/** Stands in for the media plane when WebRTC is switched off for a server. */
+function disabledWebRtcEngine(reason: string): WebRtcMediaEngine {
+  return {
+    name: 'none',
+    available: false,
+    reason,
+    negotiate: () => Promise.reject(new Error(reason)),
+    stats: () => ({ sessions: [], sources: [] }),
+    shutdown: () => Promise.resolve(),
   };
 }
 

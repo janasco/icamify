@@ -8,6 +8,7 @@ import { hashPassword, hashToken } from '../src/http/auth.ts';
 import {
   CAMERA,
   EMPTY_AUTH,
+  StubWebRtcEngine,
   connectControl,
   cookieFrom,
   request,
@@ -205,8 +206,8 @@ describe('HTTP surface', () => {
         first.status.transports.map((entry) => entry.transport),
         ['webrtc', 'mse', 'mjpeg'],
       );
-      assert.equal(first.status.transports[0]?.available, false, 'no WebRTC engine is registered');
-    });
+      assert.equal(first.status.transports[0]?.available, false, 'WebRTC is disabled for this server');
+    }, { webrtc: false });
   });
 
   test('unknown API routes return JSON 404 and wrong methods return 405', async () => {
@@ -323,7 +324,56 @@ describe('control WebSocket', () => {
       assert.equal(error.code, 'engine-unavailable');
       assert.match(String(error.message), /media engine|disabled/i);
       socket.close();
-    });
+    }, { webrtc: false });
+  });
+
+  test('brokers an offer over the control socket and reports the media plane', async () => {
+    const engine = new StubWebRtcEngine();
+    await withServer(
+      testConfig({ auth: EMPTY_AUTH }),
+      async (server) => {
+        const { socket, received } = await connectControl(server);
+        const welcome = await waitFor(() => received.find((message) => message.type === 'welcome'));
+        const cameras = welcome.cameras as Array<{ status: { transports: Array<{ transport: string; available: boolean }> } }>;
+        const transport = cameras[0]?.status.transports.find((entry) => entry.transport === 'webrtc');
+        assert.equal(transport?.available, true);
+
+        socket.send(
+          JSON.stringify({
+            type: 'webrtc:offer',
+            cameraId: 'front-door',
+            sdp: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=ice-ufrag:x\r\na=setup:actpass\r\na=rtpmap:96 H264/90000\r\n',
+          }),
+        );
+        const answer = await waitFor(() => received.find((message) => message.type === 'webrtc:answer'), 2000, 'answer');
+        assert.match(String(answer.sdp), /H264/);
+        assert.equal(engine.offers[0]?.camera.id, 'front-door');
+
+        socket.send(
+          JSON.stringify({
+            type: 'webrtc:ice',
+            sessionId: answer.sessionId,
+            candidate: { candidate: 'candidate:1 1 udp 1 10.0.0.1 5000 typ host' },
+          }),
+        );
+        await waitFor(() => engine.candidates.length === 1 ? true : undefined, 2000, 'candidate');
+
+        const status = await request(server, '/api/webrtc');
+        const body = status.json as {
+          available: boolean;
+          engine: string;
+          active: { sessions: number; sources: number };
+          details?: { sessions: Array<{ user: string; packets: number }> };
+        };
+        assert.equal(status.status, 200);
+        assert.equal(body.available, true);
+        assert.equal(body.engine, 'stub');
+        assert.equal(body.active.sessions, 1);
+        assert.equal(body.details?.sessions[0]?.packets, 10);
+        socket.close();
+      },
+      { webrtc: engine },
+    );
   });
 
   test('rejects malformed control messages without dropping the socket', async () => {

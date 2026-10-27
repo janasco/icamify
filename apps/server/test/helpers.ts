@@ -8,6 +8,7 @@ import type { FfmpegToolchain } from '@icamify/media';
 import type { LiveRegistry } from '@icamify/stream';
 import { WebSocket } from 'ws';
 import { startServer, type RunningServer } from '../src/index.ts';
+import type { IceCandidateInit, NegotiateInput, WebRtcMediaEngine } from '../src/webrtc/signaling.ts';
 
 /** Shared fixtures for the server tests. */
 
@@ -80,7 +81,7 @@ export const EMPTY_AUTH: Partial<AuthConfig> = {
 export async function withServer(
   config: ResolvedIcamifyConfig,
   run: (server: RunningServer) => Promise<void>,
-  options: { staticDir?: string | false } = {},
+  options: { staticDir?: string | false; webrtc?: WebRtcMediaEngine | false } = {},
 ): Promise<void> {
   const server = await startServer({
     config,
@@ -88,6 +89,7 @@ export async function withServer(
     host: '127.0.0.1',
     port: 0,
     staticDir: options.staticDir ?? false,
+    webrtcEngine: options.webrtc ?? false,
     log: () => {},
   });
   try {
@@ -164,6 +166,48 @@ export async function waitFor<T>(fn: () => T | undefined, timeoutMs = 2000, labe
     if (value !== undefined) return value;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/**
+ * Deterministic media plane for server tests: the real werift engine binds UDP
+ * sockets and gathers ICE candidates, which is tested in `@icamify/rtc` and would
+ * only add timing noise here.
+ */
+export class StubWebRtcEngine implements WebRtcMediaEngine {
+  readonly name = 'stub';
+  readonly available = true;
+  offers: NegotiateInput[] = [];
+  candidates: Array<{ sessionId: string; candidate: IceCandidateInit }> = [];
+  closed: string[] = [];
+
+  async negotiate(input: NegotiateInput): Promise<{ answerSdp: string; sessionId: string }> {
+    this.offers.push(input);
+    return { answerSdp: 'v=0\r\ns=-\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\n', sessionId: `engine-${this.offers.length}` };
+  }
+
+  addIceCandidate(sessionId: string, candidate: IceCandidateInit): void {
+    this.candidates.push({ sessionId, candidate });
+  }
+
+  closeSession(sessionId: string): void {
+    this.closed.push(sessionId);
+  }
+
+  stats(): { sessions: Array<{ sessionId: string; cameraId: string; user: string; createdAt: number; state: string; packets: number; bytes: number; keyframeSeen: boolean }>; sources: [] } {
+    return {
+      sessions: this.offers.map((offer, index) => ({
+        sessionId: `engine-${index + 1}`,
+        cameraId: offer.camera.id,
+        user: offer.user.username,
+        createdAt: 0,
+        state: 'connected',
+        packets: 10,
+        bytes: 1000,
+        keyframeSeen: true,
+      })),
+      sources: [],
+    };
   }
 }
 

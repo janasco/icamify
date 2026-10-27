@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { LivePlayer, type PlayerPhase, type StreamMeta } from '../live';
+import { WebRtcPlayer, type RtcPhase, type WebRtcSignaler } from '../rtc';
 import type { AiRuntime, CameraView, MotionRuntime } from '../types';
 
 const props = defineProps<{
@@ -10,12 +11,17 @@ const props = defineProps<{
   /** Live AI detections, cleared a few seconds after the last one. */
   ai?: AiRuntime | null;
   canConfigure?: boolean;
+  /** Shared per-tab signaling channel; absent means MSE only. */
+  signaler?: WebRtcSignaler | null;
+  /** ICE servers from `/api/webrtc` (STUN, or a deployment's TURN). */
+  webrtcIceServers?: Array<{ urls: string[]; username?: string; credential?: string }>;
 }>();
 const emit = defineEmits<{ (event: 'configure'): void; (event: 'ai-configure'): void; (event: 'ptz'): void }>();
 
 const tile = ref<HTMLDivElement | null>(null);
 const video = ref<HTMLVideoElement | null>(null);
-const mode = ref<'mse' | 'mjpeg'>('mse');
+/** The transport actually playing; the ladder is WebRTC → MSE → MJPEG. */
+const mode = ref<'webrtc' | 'mse' | 'mjpeg'>('mse');
 const phase = ref<PlayerPhase>('connecting');
 const meta = ref<StreamMeta | null>(null);
 const fatal = ref<string | null>(null);
@@ -23,6 +29,7 @@ const notice = ref<string | null>(null);
 const imageKey = ref(0);
 
 let player: LivePlayer | null = null;
+let rtcPlayer: WebRtcPlayer | null = null;
 let noticeTimer: number | null = null;
 
 const recordingState = computed(() => props.camera.recording.state ?? 'off');
@@ -39,6 +46,20 @@ const aiBadge = computed(() => {
 const mseSupported = computed(() => {
   const mse = props.camera.status.transports.find((entry) => entry.transport === 'mse');
   return mse?.available !== false;
+});
+
+/** WebRTC needs a registered media plane, an open control socket and a browser. */
+const webrtcSupported = computed(() => {
+  if (props.signaler == null) return false;
+  if (typeof RTCPeerConnection === 'undefined') return false;
+  const entry = props.camera.status.transports.find((candidate) => candidate.transport === 'webrtc');
+  return entry?.available === true;
+});
+
+const transportLabel = computed(() => {
+  if (mode.value === 'webrtc') return 'WebRTC';
+  if (mode.value === 'mjpeg') return 'MJPEG';
+  return 'MSE';
 });
 
 const stateClass = computed(() => {
@@ -72,8 +93,74 @@ function setNotice(message: string): void {
   }, 5000);
 }
 
-function startMse(): void {
+function startLive(): void {
+  stopPlayers();
+  fatal.value = null;
+  notice.value = null;
+  if (webrtcSupported.value) {
+    startWebRtc();
+    return;
+  }
+  mode.value = 'mse';
+  startMse();
+}
+
+function startWebRtc(): void {
+  const element = video.value;
+  const signaler = props.signaler;
+  if (element === null || signaler == null) {
+    mode.value = 'mse';
+    startMse();
+    return;
+  }
+  mode.value = 'webrtc';
+  phase.value = 'connecting';
+  meta.value = null;
+  rtcPlayer = new WebRtcPlayer({
+    cameraId: props.camera.id,
+    video: element,
+    signaler,
+    ...(props.webrtcIceServers === undefined ? {} : { iceServers: props.webrtcIceServers }),
+    callbacks: {
+      onPhase: (next: RtcPhase) => {
+        phase.value = toPlayerPhase(next);
+      },
+      onFatal: (message) => {
+        rtcPlayer = null;
+        // A dead WebRTC path is a fallback, not an error banner: the tile keeps
+        // playing over MSE and says which transport it ended up on.
+        setNotice(`WebRTC unavailable (${message}) — using MSE.`);
+        mode.value = 'mse';
+        void nextTick(startMse);
+      },
+    },
+  });
+  void rtcPlayer.start();
+}
+
+function toPlayerPhase(next: RtcPhase): PlayerPhase {
+  switch (next) {
+    case 'playing':
+      return 'playing';
+    case 'failed':
+      return 'failed';
+    case 'negotiating':
+      return 'connecting';
+    default:
+      return 'buffering';
+  }
+}
+
+function stopPlayers(): void {
   player?.stop();
+  player = null;
+  rtcPlayer?.stop();
+  rtcPlayer = null;
+}
+
+function startMse(): void {
+  stopPlayers();
+  mode.value = 'mse';
   phase.value = 'connecting';
   fatal.value = null;
   meta.value = null;
@@ -107,8 +194,7 @@ function startMse(): void {
 }
 
 function useMjpeg(reason: string): void {
-  player?.stop();
-  player = null;
+  stopPlayers();
   mode.value = 'mjpeg';
   fatal.value = reason;
   phase.value = 'buffering';
@@ -116,11 +202,10 @@ function useMjpeg(reason: string): void {
 }
 
 function retry(): void {
-  mode.value = 'mse';
   fatal.value = null;
   imageKey.value += 1;
   phase.value = 'connecting';
-  void nextTick(startMse);
+  void nextTick(startLive);
 }
 
 function onImageLoad(): void {
@@ -147,31 +232,38 @@ async function goFullscreen(): Promise<void> {
 }
 
 onMounted(() => {
-  void nextTick(startMse);
+  void nextTick(startLive);
 });
 
 onBeforeUnmount(() => {
-  player?.stop();
-  player = null;
+  stopPlayers();
   if (noticeTimer !== null) window.clearTimeout(noticeTimer);
 });
 
 watch(
   () => props.camera.id,
   () => {
-    player?.stop();
-    player = null;
-    mode.value = 'mse';
+    stopPlayers();
     fatal.value = null;
     notice.value = null;
-    void nextTick(startMse);
+    void nextTick(startLive);
+  },
+);
+
+// The engine can become available after the first render: werift loads lazily on
+// the server, so a camera whose WebRTC flag flips should reconnect at once.
+watch(
+  () => webrtcSupported.value,
+  (supported, was) => {
+    if (supported === was) return;
+    void nextTick(startLive);
   },
 );
 </script>
 
 <template>
   <div ref="tile" class="tile" @dblclick="goFullscreen">
-    <video v-show="mode === 'mse'" ref="video" muted playsinline autoplay></video>
+    <video v-show="mode === 'mse' || mode === 'webrtc'" ref="video" muted playsinline autoplay></video>
     <img
       v-if="mode === 'mjpeg'"
       :key="imageKey"
@@ -269,7 +361,8 @@ watch(
         </div>
         <div v-else-if="notice" class="banner info">{{ notice }}</div>
         <div class="tile-bottom">
-          <span class="mono">{{ resolution ?? (mode === 'mjpeg' ? 'MJPEG' : '—') }}</span>
+          <span class="mono" :title="`Live transport: ${transportLabel}`">{{ transportLabel }}</span>
+          <span class="mono">{{ resolution ?? (mode === 'mjpeg' ? 'JPEG' : '—') }}</span>
           <span v-if="meta?.codec" class="mono muted">{{ meta.codec }}</span>
           <span v-if="camera.recording.directToDisk === false" class="mono muted" title="Recording re-encodes: CPU cost follows resolution">re-encode</span>
           <span v-if="(camera.recording.bufferedSeconds ?? 0) > 0" class="mono muted">

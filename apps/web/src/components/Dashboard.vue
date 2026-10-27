@@ -9,6 +9,7 @@ import PtzPanel from './PtzPanel.vue';
 import StoragePanel from './StoragePanel.vue';
 import TimelinePlayer from './TimelinePlayer.vue';
 import { api, errorMessage } from '../api';
+import { WebRtcSignaler } from '../rtc';
 import type {
   AiRuntime,
   AiStatus,
@@ -32,6 +33,8 @@ const emit = defineEmits<{ (event: 'sign-out'): void; (event: 'sign-in'): void }
 const cameras = ref<CameraView[]>([]);
 const layouts = ref<LayoutList | null>(null);
 const system = ref<SystemInfo | null>(null);
+/** ICE configuration published by the server; empty means the browser default. */
+const webrtcIceServers = ref<Array<{ urls: string[]; username?: string; credential?: string }>>([]);
 const loading = ref(true);
 const loadError = ref<string | null>(null);
 const connected = ref(false);
@@ -68,6 +71,22 @@ let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let pollTimer: number | null = null;
 let disposed = false;
+
+/**
+ * One signaling channel per tab. The tiles share the control socket, which keeps
+ * the authorization decision to one per browser session instead of one per tile.
+ */
+const signaler = new WebRtcSignaler({
+  send: (message) => {
+    if (socket === null || socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
+  },
+});
 /** Detections are transient: drop the boxes a few seconds after the last frame. */
 const aiTimers = new Map<string, number>();
 
@@ -98,14 +117,16 @@ const viewerCount = computed(() => cameras.value.reduce((total, camera) => total
 async function load(): Promise<void> {
   loadError.value = null;
   try {
-    const [list, layoutList, info] = await Promise.all([
+    const [list, layoutList, info, rtc] = await Promise.all([
       api<CameraList>('/api/cameras'),
       api<LayoutList>('/api/layouts').catch(() => null),
       api<SystemInfo>('/api/system').catch(() => null),
+      api<{ iceServers?: Array<{ urls: string[]; username?: string; credential?: string }> }>('/api/webrtc').catch(() => null),
     ]);
     cameras.value = list.cameras;
     layouts.value = layoutList;
     system.value = info;
+    webrtcIceServers.value = rtc?.iceServers ?? [];
 
     if (order.value.length === 0) {
       const fromLayout = (defaultLayout.value?.tiles ?? [])
@@ -168,6 +189,7 @@ function connectControl(): void {
     } catch {
       return;
     }
+    if (signaler.handleMessage(message)) return;
     if (message.type === 'welcome' || message.type === 'cameras') {
       const list = message.cameras;
       if (Array.isArray(list)) cameras.value = list as CameraView[];
@@ -590,6 +612,8 @@ function readString(key: string): string | null {
               :motion="motionRuntime[camera.id] ?? null"
               :ai="aiRuntime[camera.id] ?? null"
               :can-configure="canConfigure"
+              :signaler="signaler"
+              :webrtc-ice-servers="webrtcIceServers"
               @configure="editing = camera"
               @ai-configure="editingAi = camera"
               @ptz="editingPtz = camera"

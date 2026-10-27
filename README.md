@@ -5,9 +5,10 @@ pixel motion, local AI (CodeProject.AI / DeepStack / LPR), tiered retention with
 archive and a scrubbing timeline. An architectural counterpart to Agent DVR / iSpy,
 built as one Node.js process plus a zero-plugin HTML5 console.
 
-**Status: Phase 5 complete — the storage loop is closed.** The server boots from
-validated configuration, authenticates users, serves the Vue console, streams
-cameras over fragmented MP4 (MSE) with an MJPEG fallback, records every configured
+**Status: Phase 6 — live view is WebRTC-first.** The server boots from validated
+configuration, authenticates users, serves the Vue console, streams cameras over
+WebRTC (H.264/ICE/DTLS-SRTP through `werift`) with a fragmented-MP4 (MSE) then
+MJPEG fallback, records every configured
 camera direct-to-disk, runs a pixel motion engine on the sub-stream, sends motion
 frames to a local AI detector (CodeProject.AI, DeepStack, any HTTP endpoint or a
 sandboxed plugin), executes the configured rules (record clip, snapshot, notify,
@@ -19,10 +20,13 @@ Cameras are also discovered and steered: WS-Discovery finds ONVIF devices on the
 subnet, PTZ control (continuous/absolute moves, presets, scheduled patrols) is
 exposed in the console, and a rule can aim a camera when it fires.
 
-WebRTC signaling, SDP validation and session accounting are implemented; the
-WebRTC *media* engine is the one remaining adapter and is reported honestly rather
-than faked. Email/MQTT/Telegram delivery and the resizable layout editor (6)
-remain.
+The WebRTC media plane is real: an FFmpeg RTP source per camera feeds one
+`werift` peer connection per viewer, and the console drops to MSE when ICE cannot
+connect or no frame paints. A checked-in demo harness (`npm run demo`) reproduces
+the whole system — fake ONVIF camera, stub detector, looping H.264 clips — and
+`npm run demo:rtc` proves video arrives over WebRTC without a browser.
+Email/MQTT/Telegram delivery, the script action, the resizable layout editor and
+HLS remain.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
@@ -33,7 +37,7 @@ remain.
 | 4 | AI gateway (CodeProject.AI/DeepStack/generic/plugin), label+confidence gating, rules engine, webhook notifications, alert clips | ✅ done |
 | 4b | ONVIF WS-Discovery + PTZ control/patrols, PTZ rule action, script action + email/MQTT/Telegram delivery | ✅ done (PTZ and discovery; script/delivery still pending) |
 | 5 | Retention enforcement (age/size/disk floor), archive to local/S3/SFTP, detection pruning, timeline player | ✅ done |
-| 6 | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
+| 6 | WebRTC media engine (`@icamify/rtc` + `werift`), demo harness, resizable layout editor, HLS | ✅ done (media engine; editor/HLS pending) |
 
 ## Requirements
 
@@ -43,8 +47,8 @@ remain.
   `ICAMIFY_FFPROBE_PATH`), with the encoders your profiles name — `icamify doctor`
   checks this per camera
 - Optional: CodeProject.AI or DeepStack for object/face/LPR detection
-- Optional: a WebRTC media engine (Phase 2b) for sub-200 ms viewing; without it the
-  console uses MSE
+- `werift` (installed as an optional dependency) for WebRTC; the server still runs
+  with `npm install --omit=optional`, reporting WebRTC unavailable and using MSE
 
 ## Quick start
 
@@ -72,9 +76,23 @@ npx icamify serve            # http://localhost:8060
 npx icamify probe --camera front-door --stream sub
 npx icamify ingest --camera front-door --purpose record --dry-run
 
-# every check that CI runs (typecheck + console typecheck + 376 tests)
+# every check that CI runs (typecheck + console typecheck + the full test suite)
 npm run check
 ```
+
+## Try it without cameras
+
+`npm run demo` boots a complete instance from a throwaway `.demo/` directory: three
+looping H.264 clips as cameras, a DeepStack-shaped detector on `:8765`, a fake
+ONVIF PTZ camera on `:8990` (WS-Discovery included), motion, AI rules, retention
+and the built console on <http://127.0.0.1:3000>. Then, from another shell:
+
+```bash
+npm run demo:rtc -- --camera front-door   # offers over /ws, prints RTP/keyframe counts
+```
+
+The probe is a headless browser: it proves video arrives over WebRTC, which an
+HTTP 200 never does. See [tools/demo/README.md](./tools/demo/README.md).
 
 The example config is intentionally complete — 6 cameras (ONVIF PTZ, dual-stream
 RTSP, USB, RTMP push, MJPEG, file), two volumes with S3 archiving, schedules, four
@@ -112,15 +130,17 @@ Schema: [`config/icamify.schema.json`](./config/icamify.schema.json) (add
 
 ```
 apps/server/      icamify CLI, HTTP API, WS hub, signaling, live endpoints
-apps/web/         Vue 3 + Vite console (login, camera grid, MSE/MJPEG player)
+apps/web/         Vue 3 + Vite console (login, camera grid, WebRTC/MSE/MJPEG player)
 packages/core/    config schema engine, types, defaults, validation, masks
 packages/media/   FFmpeg discovery, argv builders, probe, supervisor, snapshots
 packages/stream/  fMP4/MJPEG framing, per-camera live sessions and viewer registry
 packages/motion/  pixel motion engine: background model, zone matrix, blobs, raw-frame splitter
 packages/ai/      AI gateway: providers, mapping, bounded concurrency, circuit breaker, rule matching
 packages/onvif/   WS-Discovery + PTZ contracts
+packages/rtc/     WebRTC media engine: RTP continuity, offer parsing, werift peers
 packages/storage/ SQLite index, retention engine (age/size/disk floor), local+S3+SFTP archive targets
 plugins/          hot-loadable AI providers (reference implementation included)
+tools/demo/       demo harness: fake ONVIF camera, stub detector, config, RTC probe
 config/           canonical JSON Schema + annotated example
 docs/             architecture, configuration and API/streaming reference
 data/             runtime state: recordings, snapshots, SQLite, logs (gitignored)
@@ -247,9 +267,11 @@ npm run config:schema      # print the JSON Schema
 - **Scheduled recording evaluates windows in UTC.** `system.timezone` is advisory
   and per-schedule timezones are accepted but not converted, so a non-UTC install
   shifts its schedule.
-- **WebRTC media is not wired.** Signaling, validation and session caps work; an
-  engine (intended: `werift` H.264 bridge) must be registered. Until then
-  `/api/system` reports WebRTC unavailable with a reason and the console uses MSE.
+- **WebRTC needs H.264, plain UDP and (behind NAT) a public address.** The engine
+  re-encodes a non-H.264 live profile to H.264 and passes an H.264 one through;
+  with `streaming.webrtc.publicIp` unset, ICE advertises only local addresses, so
+  a viewer outside the LAN falls back to MSE. Session detail in `/api/webrtc` is
+  admin-only because it names users.
 - **Live audio is not carried.** The live plan maps video only.
 - **Resizable tile spans** are not in the console yet; grid size, order and focus
   persist locally. Configured layout tiles seed the initial order.

@@ -1,0 +1,480 @@
+{
+  "version": "1.0",
+  "system": {
+    "server": {
+      "host": "127.0.0.1",
+      "port": 3000
+    },
+    "timezone": "UTC",
+    "web": {
+      "serveStatic": true
+    },
+    "api": {
+      "rateLimit": {
+        "windowMs": 1000,
+        "max": 5000
+      }
+    }
+  },
+  "auth": {
+    "mode": "none",
+    "allowAnonymousViewing": true
+  },
+  "streaming": {
+    "profiles": {
+      "record-copy": {
+        "copy": true,
+        "video": {
+          "codec": "copy"
+        },
+        "audio": {
+          "codec": "none"
+        },
+        "container": "mkv"
+      },
+      "live": {
+        "video": {
+          "codec": "h264",
+          "width": 640,
+          "height": 360,
+          "fps": 15,
+          "gopSeconds": 1,
+          "preset": "veryfast",
+          "profile": "main",
+          "pixelFormat": "yuv420p"
+        },
+        "audio": {
+          "codec": "none"
+        },
+        "latency": "low"
+      },
+      "detect": {
+        "video": {
+          "codec": "h264",
+          "width": 320,
+          "height": 180,
+          "fps": 5
+        },
+        "audio": {
+          "codec": "none"
+        },
+        "latency": "low"
+      }
+    },
+    "defaults": {
+      "record": "record-copy",
+      "live": "live",
+      "detect": "detect"
+    },
+    "webrtc": {
+      "enabled": true,
+      "maxViewersPerCamera": 4,
+      "fallbackAfterMs": 4000,
+      "maxBitrateKbps": 2500,
+      "iceServers": [
+        {
+          "urls": [
+            "stun:stun.l.google.com:19302"
+          ]
+        }
+      ]
+    },
+    "mse": {
+      "enabled": true,
+      "segmentDurationMs": 1000,
+      "windowSegments": 8
+    },
+    "mjpeg": {
+      "enabled": true,
+      "fps": 5,
+      "width": 640,
+      "quality": 70
+    },
+    "fallbackChain": [
+      "webrtc",
+      "mse",
+      "mjpeg"
+    ],
+    "maxConcurrentSessions": 12,
+    "sessionIdleTimeoutSeconds": 30
+  },
+  "motion": {
+    "enabled": true,
+    "intervalMs": 250,
+    "sensitivity": 55,
+    "threshold": 24,
+    "percentThreshold": 1.2,
+    "minBlobPercent": 0.2,
+    "blurRadius": 2,
+    "grayscale": true,
+    "denoise": 1
+  },
+  "storage": {
+    "rootDir": "./.demo/data",
+    "recordingsDir": "recordings",
+    "snapshotsDir": "snapshots",
+    "stateDir": "state",
+    "tempDir": "tmp",
+    "format": "mkv",
+    "filenameTemplate": "{cameraId}/{date}/{time}-{reason}.{ext}",
+    "segmentMinutes": 2,
+    "preBufferSeconds": 5,
+    "defaultVolume": "demo",
+    "volumes": [
+      {
+        "id": "demo",
+        "path": "recordings",
+        "maxSizeGb": 2,
+        "maxAgeHours": 24,
+        "priority": 10
+      }
+    ],
+    "purge": {
+      "enabled": true,
+      "intervalSeconds": 300,
+      "strategy": "oldest-first",
+      "batchSize": 50,
+      "dryRun": false,
+      "protectFlagged": true
+    }
+  },
+  "ai": {
+    "enabled": true,
+    "defaultProviderId": "demo-detector",
+    "storeDetectionsDays": 1,
+    "maxDetectionsPerFrame": 20,
+    "providers": [
+      {
+        "id": "demo-detector",
+        "name": "Demo detector (DeepStack API)",
+        "enabled": true,
+        "type": "deepstack",
+        "url": "http://127.0.0.1:8765",
+        "mode": "object",
+        "minConfidence": 0.4,
+        "capabilities": [
+          "object"
+        ],
+        "timeoutMs": 5000,
+        "concurrency": 1
+      }
+    ]
+  },
+  "notifications": {
+    "dedupeSeconds": 20,
+    "channels": [
+      {
+        "id": "demo-log",
+        "name": "Demo log",
+        "type": "webhook",
+        "enabled": false,
+        "url": "http://127.0.0.1:8766/hook"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "id": "person-on-driveway",
+      "name": "Person on the driveway",
+      "description": "Any person detection triggers a clip and a snapshot.",
+      "enabled": true,
+      "priority": 10,
+      "when": {
+        "cameraIds": [
+          "front-door",
+          "parking"
+        ],
+        "events": [
+          "ai.object"
+        ],
+        "ai": {
+          "labels": [
+            "person"
+          ],
+          "minConfidence": 0.6
+        },
+        "cooldownSeconds": 120
+      },
+      "then": {
+        "record": {
+          "enabled": true,
+          "seconds": 20
+        },
+        "snapshot": {
+          "enabled": true,
+          "annotate": true
+        }
+      }
+    },
+    {
+      "id": "aim-at-the-gate",
+      "name": "Aim the PTZ at the gate",
+      "description": "A person at the porch turns the PTZ camera towards the gate preset.",
+      "enabled": true,
+      "priority": 20,
+      "when": {
+        "cameraIds": [
+          "porch-ptz"
+        ],
+        "events": [
+          "ai.object"
+        ],
+        "ai": {
+          "labels": [
+            "person"
+          ],
+          "minConfidence": 0.5
+        },
+        "cooldownSeconds": 120
+      },
+      "then": {
+        "ptz": {
+          "cameraId": "porch-ptz",
+          "preset": "gate"
+        },
+        "snapshot": {
+          "enabled": true
+        }
+      }
+    }
+  ],
+  "onvif": {
+    "discovery": {
+      "enabled": true,
+      "multicastAddress": "239.255.255.250",
+      "multicastPort": 3702,
+      "timeoutMs": 2500
+    },
+    "defaults": {
+      "username": "admin",
+      "password": "demo-password",
+      "timeoutMs": 4000
+    },
+    "ptz": {
+      "continuousMoveMs": 500,
+      "defaultSpeed": 0.5
+    }
+  },
+  "cameras": [
+    {
+      "id": "front-door",
+      "name": "Front Door",
+      "description": "Looping test pattern; motion, AI and recording are live.",
+      "enabled": true,
+      "tags": [
+        "entrance"
+      ],
+      "streams": {
+        "main": {
+          "type": "file",
+          "path": "./.demo/media/front-door.mp4",
+          "loop": true,
+          "realtime": true
+        }
+      },
+      "profiles": {
+        "record": "record-copy",
+        "live": "live",
+        "detect": "detect"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "motion",
+        "preBufferSeconds": 5,
+        "postRollSeconds": 8,
+        "segmentMinutes": 1
+      },
+      "motion": {
+        "enabled": true,
+        "sensitivity": 60,
+        "zones": {
+          "cols": 8,
+          "rows": 8,
+          "cells": "00000000/00000000/11111111/11111111/11111111/11111111/00000000/00000000",
+          "mode": "include"
+        }
+      },
+      "ai": {
+        "enabled": true,
+        "providerId": "demo-detector",
+        "labels": [
+          "person",
+          "car"
+        ],
+        "minConfidence": 0.55,
+        "intervalMs": 1000,
+        "cropToMotion": true,
+        "saveSnapshots": true
+      },
+      "overlay": {
+        "enabled": true,
+        "timestamp": true,
+        "cameraName": true,
+        "position": "top-left",
+        "fontSize": 18
+      },
+      "ui": {
+        "order": 10,
+        "accentColor": "#4f8cff"
+      }
+    },
+    {
+      "id": "parking",
+      "name": "Parking",
+      "description": "Continuous recording with AI filtering; a good retention and timeline subject.",
+      "enabled": true,
+      "tags": [
+        "outdoor"
+      ],
+      "streams": {
+        "main": {
+          "type": "file",
+          "path": "./.demo/media/parking.mp4",
+          "loop": true,
+          "realtime": true
+        }
+      },
+      "profiles": {
+        "record": "record-copy",
+        "live": "live",
+        "detect": "detect"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "continuous",
+        "segmentMinutes": 1
+      },
+      "motion": {
+        "enabled": true,
+        "sensitivity": 45
+      },
+      "ai": {
+        "enabled": true,
+        "providerId": "demo-detector",
+        "labels": [
+          "car",
+          "person"
+        ],
+        "minConfidence": 0.5,
+        "intervalMs": 1500
+      },
+      "ui": {
+        "order": 20,
+        "accentColor": "#3ba55d"
+      }
+    },
+    {
+      "id": "porch-ptz",
+      "name": "Porch (PTZ)",
+      "description": "Streams a test pattern but drives the fake ONVIF camera for real PTZ traffic.",
+      "enabled": true,
+      "tags": [
+        "ptz"
+      ],
+      "streams": {
+        "main": {
+          "type": "file",
+          "path": "./.demo/media/porch.mp4",
+          "loop": true,
+          "realtime": true
+        }
+      },
+      "profiles": {
+        "record": "record-copy",
+        "live": "live",
+        "detect": "detect"
+      },
+      "recording": {
+        "enabled": true,
+        "mode": "motion",
+        "postRollSeconds": 6,
+        "segmentMinutes": 1
+      },
+      "motion": {
+        "enabled": true,
+        "sensitivity": 50
+      },
+      "ai": {
+        "enabled": true,
+        "providerId": "demo-detector",
+        "labels": [
+          "person"
+        ],
+        "minConfidence": 0.5,
+        "intervalMs": 1500
+      },
+      "ptz": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8990,
+        "profileToken": "profile_main",
+        "presets": [
+          {
+            "name": "porch",
+            "pan": 0,
+            "tilt": 0.1,
+            "zoom": 0.2
+          },
+          {
+            "name": "gate",
+            "pan": -0.6,
+            "tilt": -0.1,
+            "zoom": 0.4
+          },
+          {
+            "name": "parking",
+            "pan": 0.7,
+            "tilt": -0.2,
+            "zoom": 0.1
+          }
+        ],
+        "patrol": {
+          "enabled": false,
+          "presets": [
+            "porch",
+            "gate",
+            "parking"
+          ],
+          "dwellSeconds": 15
+        }
+      },
+      "ui": {
+        "order": 30,
+        "accentColor": "#c98bff"
+      }
+    }
+  ],
+  "layouts": [
+    {
+      "id": "demo-grid",
+      "name": "Demo grid",
+      "isDefault": true,
+      "columns": 2,
+      "rows": 2,
+      "autoFill": true,
+      "tiles": [
+        {
+          "cameraId": "front-door",
+          "x": 0,
+          "y": 0,
+          "width": 1,
+          "height": 1
+        },
+        {
+          "cameraId": "parking",
+          "x": 1,
+          "y": 0,
+          "width": 1,
+          "height": 1
+        },
+        {
+          "cameraId": "porch-ptz",
+          "x": 0,
+          "y": 1,
+          "width": 2,
+          "height": 1
+        }
+      ]
+    }
+  ]
+}

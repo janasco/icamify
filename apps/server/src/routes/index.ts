@@ -203,6 +203,7 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
           rules: deps.rules !== undefined,
           retention: deps.storage !== undefined,
           timeline: deps.recording !== undefined,
+          webrtc: deps.signaling.available,
           archive: (deps.config.storage.archiveProviders ?? []).some((provider) => provider.enabled !== false),
         },
       });
@@ -218,11 +219,23 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
     { auth: 'required', role: 'admin' },
   );
 
+  // Capabilities plus a live view of the media plane. Session details name the
+  // users watching, so they are admin-only; the counts are not sensitive.
   router.get(
     '/api/webrtc',
     (context) => {
       requireView(context);
-      sendJson(context.res, 200, deps.signaling.capabilities());
+      const stats = deps.signaling.stats();
+      sendJson(context.res, 200, {
+        ...deps.signaling.capabilities(),
+        active: {
+          sessions: stats.sessions.length,
+          cameras: new Set(stats.sessions.map((session) => session.cameraId)).size,
+          sources: stats.sources.length,
+          packets: stats.sources.reduce((total, source) => total + source.packets, 0),
+        },
+        ...(context.principal?.role === 'admin' ? { details: stats } : {}),
+      });
     },
     { auth: 'optional' },
   );

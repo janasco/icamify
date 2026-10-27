@@ -33,15 +33,31 @@ src/
 
 ## Transport ladder
 
-1. **MSE** (default) — `/api/cameras/:id/live.ws`, fragmented MP4. The server
-   sends `stream:init` with the codec string, then the init segment, then one
-   binary frame per fragment.
-2. **MJPEG** — automatic fallback when the socket closes with a fatal reason
+1. **WebRTC** (default when available) — `rtc.ts` offers H.264 over the control
+   socket and plays the single inbound track. Lowest latency and no per-viewer
+   encode.
+2. **MSE** — `/api/cameras/:id/live.ws`, fragmented MP4. The server sends
+   `stream:init` with the codec string, then the init segment, then one binary
+   frame per fragment. Also the first fallback for WebRTC.
+3. **MJPEG** — automatic fallback when MSE closes with a fatal reason
    (`codec-unsupported`, `transport-disabled`, viewer/session limits), when
    `MediaSource` is missing, or when the codec is unsupported. Uses
    `/api/cameras/:id/live.mjpeg`.
-3. **WebRTC** — the signaling client is not wired because no media engine is
-   registered yet; `/api/system` reports why, and the footer shows it.
+
+The tile footer names the transport actually in use (`WebRTC` / `MSE` / `MJPEG`),
+so a fallback is visible rather than silent.
+
+`rtc.ts` is deliberately defensive:
+
+- offers are serialised per tab, because `webrtc:error` carries no camera id and
+  two parallel negotiations could hand one tile another tile's failure;
+- ICE candidates are buffered until the answer names the session id (a candidate
+  sent earlier is rejected by the hub), then flushed;
+- a connection that reaches `connected` but paints no frame within 8 s is a
+  failure, not a success — that is what a firewall dropping UDP looks like — and
+  the tile falls back to MSE with a one-line notice;
+- `requestVideoFrameCallback` is used where available, with a playhead poll for
+  browsers that lack it.
 
 `live.ts` keeps playback honest:
 

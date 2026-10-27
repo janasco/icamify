@@ -11,9 +11,12 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@icamify/ai": "*",
     "@icamify/core": "*",
     "@icamify/media": "*",
     "@icamify/motion": "*",
+    "@icamify/onvif": "*",
+    "@icamify/rtc": "*",
     "@icamify/storage": "*",
     "@icamify/stream": "*",
     "hash-wasm": "^4.12.0",

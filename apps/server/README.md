@@ -7,8 +7,13 @@ signaling.
 **Phase:** 1 (CLI, config, diagnostics), 2 (HTTP/WS/live view/signaling),
 3 (recording, pre-buffer, motion, clip playback), 4 (AI gateway, detections,
 rules, webhook alerts), 4b (ONVIF discovery, PTZ control and patrols),
-5 (retention, archive, timeline). The script rule action and non-webhook
-notification channels remain.
+5 (retention, archive, timeline), 6 (WebRTC media plane). The script rule action
+and non-webhook notification channels remain.
+
+WebRTC is a real media plane, not just signalling: `/api/webrtc/*` parses the
+offer, spawns one FFmpeg per camera that writes RTP into the peer connection
+(`@icamify/rtc` rewrites sequence numbers and timestamps across restarts), and
+falls back to the MSE endpoint when the browser or network cannot do WebRTC.
 
 ```bash
 npx icamify serve --config config/icamify.json   # the normal way to run iCamify
@@ -140,8 +145,8 @@ reason on `/api/storage` rather than failing startup.
 
 The `then.script` rule action, email/MQTT/Telegram
 delivery (only webhooks are implemented), boot-time disk ↔ index reconciliation,
-and a WebRTC media engine (signaling is ready; the engine seam is empty by
-design). SFTP archiving requires the OpenSSH client and key authentication.
+the resizable layout editor and the HLS segmenter. SFTP archiving requires the
+OpenSSH client and key authentication.
 `scheduled` recording evaluates windows in UTC. Custom `system.api.basePath` values
 and `corsOrigins` are not honoured yet — routes are always under `/api` and the
 console is same-origin.

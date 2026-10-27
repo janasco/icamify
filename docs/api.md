@@ -70,7 +70,7 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/auth/me` | optional | `{authenticated, user, auth:{mode, signInRequired, allowAnonymousViewing, userCount}}`. |
 | GET | `/api/system` | optional | Version, uptime, FFmpeg capabilities, transport ladder, feature flags. |
 | GET | `/api/system/config` | admin | Fully resolved config, secrets redacted. |
-| GET | `/api/webrtc` | optional | WebRTC capability, ICE servers, fallback timeout, codec preference. |
+| GET | `/api/webrtc` | optional | WebRTC capability, ICE servers, fallback timeout, codec preference, live session/source counters (`details` for admins). |
 | GET | `/api/cameras` | optional | Camera views incl. derived status and transport availability. |
 | GET | `/api/cameras/:id` | optional | One camera view. |
 | GET | `/api/cameras/:id/snapshot.jpg?w=960` | optional | Single JPEG from the sub-stream (falls back to main), `no-store`. |
@@ -451,16 +451,48 @@ that stop reading are dropped at 4 MiB of queued data.
 
 ---
 
-## WebRTC status
+## WebRTC
 
-The signaling service is complete: SDP validation (must be `v=0`, contain a
-video section and ICE credentials), per-camera session cap
-(`streaming.webrtc.maxViewersPerCamera`), ICE candidate forwarding, 2-minute
-session expiry, and a capability answer the console uses to fall back
-immediately instead of waiting `fallbackAfterMs`.
+Signaling: SDP validation (must be `v=0`, contain a video section and ICE
+credentials), per-camera session cap (`streaming.webrtc.maxViewersPerCamera`),
+ICE candidate forwarding, 2-minute session expiry, and a capability answer the
+console uses to fall back immediately instead of waiting `fallbackAfterMs`.
+An anonymous viewer may open a session only when anonymous viewing is allowed,
+and is accounted as role `viewer` so the cap cannot be dodged by signing out.
 
-The media plane is a pluggable `WebRtcMediaEngine`. **No engine ships yet**, so
-`GET /api/webrtc` reports `available:false` with a reason and offers return
-`engine-unavailable`; the console therefore starts at MSE. Registering an engine
-(a `werift`-based H.264 bridge is the intended adapter) requires no API change —
-`SignalingService` calls `negotiate`, `addIceCandidate` and `closeSession` on it.
+Media plane: `@icamify/rtc`, a `werift` peer per viewer fed by one FFmpeg RTP
+source per camera (H.264, packetisation mode 1). Only H.264 is offered; the
+answer echoes the browser's own payload type and fmtp. An offer without H.264 is
+rejected before any pipeline starts (`negotiation-failed`, with the offered
+codecs in the message). `werift` is an optional dependency: with
+`npm install --omit=optional`, `available` becomes `false`, `reason` explains it
+and the console starts at MSE.
+
+`GET /api/webrtc` (requires view rights) returns the capability block plus:
+
+```json
+{
+  "enabled": true, "available": true, "engine": "werift",
+  "iceServers": [{ "urls": ["stun:stun.l.google.com:19302"] }],
+  "fallbackAfterMs": 4000, "maxBitrateKbps": 2500,
+  "codecPreference": ["h264", "vp8", "vp9"],
+  "maxViewersPerCamera": 4,
+  "active": { "sessions": 1, "cameras": 1, "sources": 1, "packets": 634 }
+}
+```
+
+Admins also get `details`: `sessions[]` (session id, camera, user, state,
+packets, bytes, `keyframeSeen`) and `sources[]` (per-camera pipeline: packets,
+bytes, `discontinuities`, `dropped`, `lastError`, FFmpeg `argv`). Session ids are
+shared with signaling, so an answer's `sessionId` can be traced to its counters.
+
+Over the control socket the flow is: `webrtc:offer {cameraId, sdp}` →
+`webrtc:answer {sessionId, cameraId, sdp}` or `webrtc:error {code, message}`;
+then `webrtc:ice {sessionId, candidate}` and finally `webrtc:close {sessionId}`.
+Error codes are `engine-unavailable`, `invalid-offer`, `camera-not-found`,
+`camera-disabled`, `viewer-limit`, `forbidden`, `negotiation-failed`.
+`webrtc:error` carries no camera id, so a client must not run two negotiations
+concurrently on one socket — the console serialises them for exactly that reason.
+
+Verification: `npm run demo:rtc -- --camera front-door` offers as a headless
+browser and prints the RTP, keyframe and parameter-set counts that arrived.

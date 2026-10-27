@@ -12,6 +12,9 @@ dist/
 data/
 *.log
 
+# demo harness state (generated clips, config copy, recordings)
+.demo/
+
 # secrets & local overrides
 .env
 .env.*

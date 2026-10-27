@@ -142,6 +142,21 @@ describe('SignalingService', () => {
     assert.equal(anonymous.ok === false ? anonymous.code : '', 'forbidden');
   });
 
+  test('lets an anonymous viewer open a session only when viewing is public', async () => {
+    const engine = new FakeEngine();
+    const service = new SignalingService({
+      config: testConfig({ auth: EMPTY_AUTH, cameras: [CAMERA] }),
+      engine,
+      allowAnonymous: () => true,
+    });
+    const result = await service.offer({ cameraId: 'front-door', sdp: VALID_OFFER });
+    assert.equal(result.ok, true);
+    // Accounted as a viewer, so the per-camera cap cannot be dodged by signing out.
+    assert.equal(engine.offers[0]?.user.username, 'anonymous');
+    assert.equal(engine.offers[0]?.user.role, 'viewer');
+    assert.equal(service.sessions_()[0]?.username, 'anonymous');
+  });
+
   test('surfaces an engine negotiation failure instead of throwing', async () => {
     const engine: WebRtcMediaEngine = {
       name: 'broken',

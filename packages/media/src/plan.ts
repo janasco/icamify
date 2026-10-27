@@ -1,6 +1,13 @@
 import { isAbsolute, join } from 'node:path';
 import type { CameraConfig, ResolvedIcamifyConfig, StreamProfile, StreamSource } from '@icamify/core';
-import { buildDetectArgs, buildLiveArgs, buildRecordArgs, type BuildResult } from './ffmpeg/args.ts';
+import {
+  buildDetectArgs,
+  buildLiveArgs,
+  buildRecordArgs,
+  type BuildResult,
+  type LiveOutput,
+  type RtpEgressOptions,
+} from './ffmpeg/args.ts';
 import { MediaError } from './errors.ts';
 import type { PipelinePurpose } from './types.ts';
 
@@ -65,7 +72,9 @@ export interface PipelinePlanOptions {
   segmentSeconds?: number;
   maxFileSizeMb?: number;
   includeAudio?: boolean;
-  liveOutput?: 'fmp4' | 'mpegts' | 'mjpeg';
+  liveOutput?: LiveOutput;
+  /** Set together with `liveOutput: 'rtp'`; the WebRTC engine owns the socket. */
+  rtp?: RtpEgressOptions;
   /** Fragment duration for MSE (streaming.mse.segmentDurationMs). */
   segmentDurationMs?: number;
   /** MJPEG fallback geometry, cadence and quality (ignored for fMP4). */
@@ -130,6 +139,7 @@ export function buildPipelinePlan(
         ...(options.liveWidth === undefined ? {} : { width: options.liveWidth }),
         ...(options.liveHeight === undefined ? {} : { height: options.liveHeight }),
         ...(options.mjpegQuality === undefined ? {} : { mjpegQuality: options.mjpegQuality }),
+        ...(options.rtp === undefined ? {} : { rtp: options.rtp }),
       });
       break;
     case 'detect':

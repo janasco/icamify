@@ -1,4 +1,5 @@
 import type { CameraConfig, ResolvedIcamifyConfig, Role } from '@icamify/core';
+import type { WebRtcEngineStats } from '@icamify/rtc';
 import type { Principal } from '../http/auth.ts';
 
 /**
@@ -6,12 +7,12 @@ import type { Principal } from '../http/auth.ts';
  *
  * This module owns everything that can be decided without a media stack: SDP
  * validation, per-camera session accounting, the ICE candidate handshake, and
- * the capability answer the UI needs to fall back cleanly. The actual peer
- * connection is a `WebRtcMediaEngine` implementation — plugging one in (for
- * example a `werift` bridge that consumes the same live RTP/bitstream) requires
- * no change here, and until one is registered the service reports exactly why
- * WebRTC is unavailable instead of leaving the player hanging until its
- * `fallbackAfterMs` expires.
+ * the capability answer the UI needs to fall back cleanly. The media plane is a
+ * `WebRtcMediaEngine`; the server plugs in `@icamify/rtc`, whose engine satisfies
+ * this interface structurally. Keeping the contract here means the engine can be
+ * swapped (or absent) without touching authorization, limits or the hub, and an
+ * unavailable engine still reports exactly why instead of leaving the player
+ * hanging until its `fallbackAfterMs` expires.
  */
 
 export interface IceServerConfig {
@@ -40,7 +41,7 @@ export interface NegotiateResult {
   sessionId?: string;
 }
 
-/** Media-plane adapter. One implementation the server does not ship yet. */
+/** Media-plane adapter. `@icamify/rtc` supplies the real implementation. */
 export interface WebRtcMediaEngine {
   readonly name: string;
   readonly available: boolean;
@@ -49,6 +50,9 @@ export interface WebRtcMediaEngine {
   negotiate(input: NegotiateInput): Promise<NegotiateResult>;
   addIceCandidate?(sessionId: string, candidate: IceCandidateInit): void | Promise<void>;
   closeSession?(sessionId: string): void;
+  /** Per-session and per-camera counters, for `/api/webrtc`. */
+  stats?(): WebRtcEngineStats;
+  shutdown?(): Promise<void>;
 }
 
 export interface SignalingSession {
@@ -67,6 +71,11 @@ export type OfferResult =
 export interface SignalingServiceOptions {
   config: ResolvedIcamifyConfig;
   engine?: WebRtcMediaEngine;
+  /**
+   * Deployments that allow anonymous viewing may also open a WebRTC session;
+   * otherwise the console would show a grid it can never play. Defaults to off.
+   */
+  allowAnonymous?: () => boolean;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -77,6 +86,7 @@ const SESSION_TTL_MS = 120_000;
 export class SignalingService {
   private readonly config: ResolvedIcamifyConfig;
   private readonly engine: WebRtcMediaEngine | undefined;
+  private readonly allowAnonymous: () => boolean;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private readonly sessions = new Map<string, SignalingSession>();
@@ -84,6 +94,7 @@ export class SignalingService {
   constructor(options: SignalingServiceOptions) {
     this.config = options.config;
     this.engine = options.engine;
+    this.allowAnonymous = options.allowAnonymous ?? (() => false);
     this.now = options.now ?? Date.now;
     this.log = options.log ?? (() => {});
   }
@@ -108,9 +119,7 @@ export class SignalingService {
   }
 
   iceServers(): IceServerConfig[] {
-    const configured = this.config.streaming.webrtc?.iceServers;
-    if (configured !== undefined && configured.length > 0) return configured;
-    return [{ urls: ['stun:stun.l.google.com:19302'] }];
+    return iceServersFor(this.config);
   }
 
   capabilities(): {
@@ -158,9 +167,13 @@ export class SignalingService {
       return { ok: false, code: 'camera-disabled', message: `Camera "${input.cameraId}" is disabled.` };
     }
     const principal = input.principal;
-    if (principal === undefined) {
+    if (principal === undefined && !this.allowAnonymous()) {
       return { ok: false, code: 'forbidden', message: 'Sign in to open a WebRTC session.' };
     }
+    // Same rule as the HTTP surface: an anonymous viewer is a viewer, and is
+    // accounted as one so the per-camera limit cannot be bypassed by signing out.
+    const user: { username: string; role: Role } =
+      principal === undefined ? { username: 'anonymous', role: 'viewer' } : { username: principal.username, role: principal.role };
 
     this.pruneSessions();
     const active = [...this.sessions.values()].filter((session) => session.cameraId === camera.id).length;
@@ -173,21 +186,24 @@ export class SignalingService {
       };
     }
 
-    const sessionId = `rtc_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    const provisionalId = `rtc_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
     try {
       const result = await this.engine?.negotiate({
         camera,
         offerSdp: input.sdp as string,
         iceServers: this.iceServers(),
-        user: { username: principal.username, role: principal.role },
+        user,
       });
       if (result === undefined) {
         return { ok: false, code: 'negotiation-failed', message: 'The WebRTC engine returned no answer.' };
       }
+      // The engine's id is preferred: `/api/webrtc` reports engine counters keyed by
+      // it, so a differing signaling id would make a session impossible to trace.
+      const sessionId = result.sessionId ?? provisionalId;
       const record: SignalingSession = {
         sessionId,
         cameraId: camera.id,
-        username: principal.username,
+        username: user.username,
         createdAt: this.now(),
         candidates: 0,
         ...(result.sessionId === undefined ? {} : { engineSessionId: result.sessionId }),
@@ -234,12 +250,40 @@ export class SignalingService {
     return [...this.sessions.values()];
   }
 
+  /**
+   * Media-plane counters for `/api/webrtc`. The signaling view is authoritative
+   * for who is watching; the engine's view is authoritative for packets, gaps and
+   * pipeline errors, and both are needed to explain a black tile.
+   */
+  stats(): WebRtcEngineStats {
+    this.pruneSessions();
+    const engine = this.engine?.stats?.();
+    return {
+      sessions: engine?.sessions ?? [],
+      sources: engine?.sources ?? [],
+    };
+  }
+
   private pruneSessions(): void {
     const now = this.now();
     for (const [sessionId, session] of this.sessions) {
       if (now - session.createdAt > SESSION_TTL_MS) this.close(sessionId);
     }
   }
+}
+
+/**
+ * STUN configuration for ICE.
+ *
+ * The default is a public STUN server, which is enough for the common case (a
+ * camera and a viewer behind the same NAT). A deployment behind carrier-grade NAT
+ * needs its own TURN server in `streaming.webrtc.iceServers`; without one, the
+ * console falls back to MSE, which still works over the same HTTPS port.
+ */
+export function iceServersFor(config: Pick<ResolvedIcamifyConfig, 'streaming'>): IceServerConfig[] {
+  const configured = config.streaming.webrtc?.iceServers;
+  if (configured !== undefined && configured.length > 0) return configured;
+  return [{ urls: ['stun:stun.l.google.com:19302'] }];
 }
 
 /** Returns a human-readable reason, or undefined when the SDP looks usable. */

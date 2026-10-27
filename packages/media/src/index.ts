@@ -46,6 +46,7 @@ export {
   type LiveBuildOptions,
   type LiveOutput,
   type RecordBuildOptions,
+  type RtpEgressOptions,
   type SnapshotBuildOptions,
   type SnapshotCrop,
 } from './ffmpeg/args.ts';

@@ -1,0 +1,16 @@
+{
+  "name": "@icamify/rtc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WebRTC media engine: ICE/DTLS/SRTP peers fed by an FFmpeg RTP source.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@icamify/core": "*"
+  },
+  "optionalDependencies": {
+    "werift": "^0.25.2"
+  }
+}
