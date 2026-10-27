@@ -362,6 +362,62 @@ export interface StorageOverview {
   lastSweep?: RetentionSweepResult[];
 }
 
+export interface PtzPresetView {
+  name: string;
+  token?: string;
+  pan?: number;
+  tilt?: number;
+  zoom?: number;
+  source?: 'config' | 'device';
+}
+
+export interface PtzStatus {
+  cameraId: string;
+  supported: boolean;
+  reachable: boolean;
+  reason?: string;
+  endpoint?: string;
+  profileToken?: string;
+  presets: PtzPresetView[];
+  patrol: {
+    enabled: boolean;
+    running: boolean;
+    pausedUntil?: number;
+    presets: string[];
+    dwellSeconds: number;
+    nextPreset?: string;
+  };
+}
+
+export interface OnvifScanDevice {
+  urn: string;
+  xaddr: string;
+  host: string;
+  port?: number;
+  name?: string;
+  hardware?: string;
+  location?: string;
+  scopes: string[];
+  discoveredAt: number;
+  configured: boolean;
+}
+
+export interface OnvifScanResult {
+  devices: OnvifScanDevice[];
+  warnings: string[];
+}
+
+export interface OnvifDescribeResult {
+  host: string;
+  port: number;
+  device: { manufacturer?: string; model?: string; firmwareVersion?: string; serialNumber?: string };
+  profiles: Array<{ token: string; name: string; width?: number; height?: number; encoding?: string; fps?: number; bitrateKbps?: number }>;
+  streamUri?: string;
+  snapshotUri?: string;
+  presets: Array<{ name: string; token?: string }>;
+  ptzSupported: boolean;
+}
+
 /** One day of recordings for one camera (or all cameras). */
 export interface TimelineResponse {
   cameraId?: string;

@@ -491,6 +491,18 @@ and more accurate. `intervalMs` protects a slow detector from a backlog.
 exist on the device. Patrols reference preset names and optionally schedules;
 referencing an unknown preset is a validation error.
 
+The ONVIF service endpoint is resolved in this order: an explicit `ptz.host`, the
+host of an `onvif` main stream, then the host of an `rtsp` URL (ONVIF is HTTP, so
+that case uses port 80 — set `ptz.port` when the device listens elsewhere).
+`onvif.defaults` supplies shared credentials when the source has none.
+
+At runtime a preset is visited by `token` (GotoPreset), else by
+`pan`/`tilt`/`zoom` (AbsoluteMove), else by name against the presets the camera
+itself reports. `ptz.patrol` starts a tour with the process: each preset is visited
+after `dwellSeconds` (minimum 5), in order or at random, and only inside
+`scheduleIds` when given. Any manual move from the console pauses the tour for 60
+seconds, so an operator can look at something without fighting the patroller.
+
 ### Privacy masks
 
 Normalized rectangles (`0..1`) blacked out in live views and snapshots.
@@ -718,7 +730,10 @@ crashes and memory, not malicious code — install only plugins you trust.
 ```
 
 Then add a volume that accepts `gate` (or omit `cameraIds` on your default
-volume) and validate.
+volume) and validate. Reachability is easy to confirm from the console: **Discover**
+lists ONVIF devices on the subnet and prints the RTSP URI, profiles and preset
+names of the one you select, and the tile's PTZ button only appears for cameras
+the server resolved an endpoint for.
 
 ### Keep 30 days of continuous recording and archive older footage
 

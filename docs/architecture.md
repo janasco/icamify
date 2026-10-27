@@ -172,9 +172,15 @@ icamify/
 │   │   ├── src/index.ts             ✅ contracts + exports
 │   │   └── test/                    ✅ 50 tests (mapping, providers, gateway, rules, plugin)
 │   │
-│   ├── onvif/                       📐 discovery + PTZ (Phase 4)
+│   ├── onvif/                       ✅ discovery + PTZ (Phase 4b)
 │   │   ├── README.md                ✅ scope + security behaviour
-│   │   └── src/index.ts             📐 OnvifScanner, OnvifDeviceClient, PtzClient
+│   │   ├── src/xml.ts               ✅ minimal XML parser + escaping
+│   │   ├── src/soap.ts              ✅ SOAP 1.2 envelopes, WS-Security, PTZ requests
+│   │   ├── src/discovery.ts         ✅ WS-Discovery probe/parse over UDP multicast
+│   │   ├── src/client.ts            ✅ device/media/PTZ client, digest + basic auth
+│   │   ├── src/errors.ts            ✅ classified error codes
+│   │   ├── src/index.ts             ✅ contracts + exports
+│   │   └── test/                    ✅ 24 tests (XML/SOAP, discovery, client, digest)
 │   │
 │   └── storage/                     ✅ recording index, retention, archive
 │       ├── README.md                ✅ schema, API, retention order, archive rules
@@ -433,7 +439,7 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | **2b — WebRTC media** | Register a WebRTC media engine (H.264 RTP ↔ ICE/DTLS), resizable tile spans in the grid editor, HLS segmenter | planned |
 | **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
 | **4 — AI & alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, crop-to-motion, label/confidence gating, rules engine, alert clips, webhook delivery (HMAC), console detection overlay and event log | ✅ complete |
-| **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ presets/patrols, rule actions for PTZ and scripts, email/MQTT/Telegram delivery | not started |
+| **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ moves/presets/patrols, PTZ rule action, PTZ pad and discovery dialog in the console | ✅ complete (script action and email/MQTT/Telegram delivery still pending) |
 | **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), detection-history pruning, timeline player with motion/AI/rule markers, on-demand MP4 remux, storage panel | ✅ complete (SFTP needs OpenSSH + a key) |
 
 ### Exit criteria per phase
@@ -465,6 +471,11 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   pending hardware.)*
 - **4** — a person-only rule produces exactly one Telegram alert and one clip;
   LPR labels reach the rule engine with confidence; PTZ preset round-trips.
+  *(The PTZ half is verified: the ONVIF client round-trips discovery, device info,
+  profiles, presets, moves and stop against a fake ONVIF device over HTTP with a
+  digested 401, and the service resolves endpoints, merges device presets and
+  pauses patrols on manual moves. Telegram delivery is still not implemented and
+  a physical PTZ camera is still pending hardware.)*
 - **5** — quotas are enforced within one interval; a failed archive never deletes
   the local file; archived segments are recorded with their provider; the timeline
   plays any clip without transcoding. *(Verified with FFmpeg 7.0.2: two real

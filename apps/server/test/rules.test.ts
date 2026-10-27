@@ -257,7 +257,44 @@ describe('RuleEngine', () => {
     }
   });
 
-  test('reports actions it cannot execute instead of pretending they ran', async () => {
+  test('drives PTZ through the injected controller, defaulting to the trigger camera', async () => {
+    const config = configWith({
+      rules: [
+        { id: 'turn', name: 'Turn to gate', when: { events: ['motion'] }, then: { ptz: { preset: 'gate' } } },
+        {
+          id: 'elsewhere',
+          name: 'Turn another camera',
+          when: { events: ['ai.object'] },
+          then: { ptz: { cameraId: 'back-yard', preset: 'drive' } },
+        },
+      ],
+    });
+    const index = new RecordingIndex({ path: ':memory:' });
+    const { record } = recordingStub();
+    const calls: Array<{ cameraId: string; preset: string }> = [];
+    try {
+      const engine = new RuleEngine({
+        config,
+        recording: record,
+        index,
+        ptz: async (request) => {
+          calls.push(request);
+        },
+        log: () => {},
+      });
+      const outcomes = await engine.handle({ id: 'p1', cameraId: 'front-door', kind: 'motion', at: 1 });
+      assert.deepEqual(calls, [{ cameraId: 'front-door', preset: 'gate' }]);
+      assert.equal(outcomes[0]?.actions.find((action) => action.action === 'ptz')?.ok, true);
+
+      const second = await engine.handle({ id: 'a1', cameraId: 'front-door', kind: 'ai.object', at: 2, label: 'person' });
+      assert.deepEqual(calls[1], { cameraId: 'back-yard', preset: 'drive' });
+      assert.equal(second[0]?.actions.find((action) => action.action === 'ptz')?.ok, true);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('reports a failed PTZ move and actions it cannot execute instead of pretending they ran', async () => {
     const config = configWith({
       rules: [
         {
@@ -272,17 +309,29 @@ describe('RuleEngine', () => {
     const { record } = recordingStub();
     const warnings: string[] = [];
     try {
-      const engine = new RuleEngine({ config, recording: record, index, log: (line) => warnings.push(line) });
-      const outcomes = await engine.handle({ id: 'p1', cameraId: 'front-door', kind: 'motion', at: 1 });
+      const unavailable = new RuleEngine({ config, recording: record, index, log: () => {} });
+      const blocked = await unavailable.handle({ id: 'p0', cameraId: 'front-door', kind: 'motion', at: 1 });
+      assert.equal(blocked[0]?.actions.find((action) => action.action === 'ptz')?.ok, false);
+
+      const engine = new RuleEngine({
+        config,
+        recording: record,
+        index,
+        ptz: async () => {
+          throw new Error('the camera rejected the credentials');
+        },
+        log: (line) => warnings.push(line),
+      });
+      const outcomes = await engine.handle({ id: 'p1', cameraId: 'front-door', kind: 'motion', at: 2 });
       const actions = outcomes[0]?.actions ?? [];
       assert.equal(actions.find((action) => action.action === 'ptz')?.ok, false);
+      assert.match(actions.find((action) => action.action === 'ptz')?.detail ?? '', /rejected the credentials/);
       assert.equal(actions.find((action) => action.action === 'script')?.ok, false);
-      assert.equal(warnings.filter((line) => line.includes('not implemented')).length, 2);
+      assert.equal(warnings.filter((line) => line.includes('not implemented')).length, 1);
 
       // The warning is reported once per rule, not on every event.
-      const again = new RuleEngine({ config, recording: record, index, log: (line) => warnings.push(line) });
-      await again.handle({ id: 'p2', cameraId: 'front-door', kind: 'motion', at: 2 });
-      assert.equal(warnings.filter((line) => line.includes('not implemented')).length, 4);
+      await engine.handle({ id: 'p2', cameraId: 'front-door', kind: 'motion', at: 3 });
+      assert.equal(warnings.filter((line) => line.includes('not implemented')).length, 1);
     } finally {
       index.close();
     }

@@ -4,8 +4,9 @@ Zero-plugin Vue 3 SPA built with Vite. Same origin as the API, so the session
 cookie, WebSocket and MSE socket need no CORS configuration.
 
 **Phase:** 5 (grid + MSE/MJPEG live view + motion/AI overlays + zone editor +
-clips + event log + AI settings + storage panel + timeline player). PTZ controls
-come with 4b; the console links no dead controls for them.
+clips + event log + AI settings + storage panel + timeline player) plus 4b (PTZ
+pad, patrol toggle, ONVIF discovery and inspection). The PTZ button only appears
+on cameras the server reports an ONVIF endpoint for, so there is no dead control.
 
 ## Layout
 
@@ -22,6 +23,8 @@ src/
     Dashboard.vue            top bar, camera rail, grid, control socket, drawers
     CameraTile.vue           per-tile player, motion/AI boxes, REC state, snapshot, fullscreen
     MotionEditor.vue         paintable zone matrix + sensitivity (GET/PUT motion API)
+    PtzPanel.vue             PTZ pad, speed/step, presets, patrol toggle (PTZ API)
+    OnvifDiscovery.vue       WS-Discovery scan, device inspection, copy-ready snippet
     AiEditor.vue             per-camera AI task, label filter, confidence, detect-now (GET/PUT/POST AI API)
     ClipsPanel.vue           recordings + events drawer, inline playback from the Range endpoint
     StoragePanel.vue         volume usage, quotas, archive state, manual sweep + dry run
@@ -58,6 +61,12 @@ src/
   focuses one camera.
 - Preferences persist in `localStorage`: `icamify.columns`, `icamify.order`,
   `icamify.focus`. Configured layouts seed the initial order and column count.
+- A camera with an ONVIF endpoint gets a PTZ button on its tile: the pad sends
+  bounded `ContinuousMove` requests (arrow keys work, Space stops, Esc closes) and
+  the panel shows presets, whether the camera is reachable and the patrol state.
+- **Discover** (operators and admins) probes the subnet, reads the selected
+  device's profiles/URIs/presets and offers a configuration snippet to copy;
+  credentials typed there are used for that inspection only.
 
 ### Motion and recordings
 

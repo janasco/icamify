@@ -4,6 +4,8 @@ import AiEditor from './AiEditor.vue';
 import CameraTile from './CameraTile.vue';
 import ClipsPanel from './ClipsPanel.vue';
 import MotionEditor from './MotionEditor.vue';
+import OnvifDiscovery from './OnvifDiscovery.vue';
+import PtzPanel from './PtzPanel.vue';
 import StoragePanel from './StoragePanel.vue';
 import TimelinePlayer from './TimelinePlayer.vue';
 import { api, errorMessage } from '../api';
@@ -47,6 +49,8 @@ const clipsError = ref<string | null>(null);
 const newClips = ref(0);
 const editing = ref<CameraView | null>(null);
 const editingAi = ref<CameraView | null>(null);
+const editingPtz = ref<CameraView | null>(null);
+const discoveryOpen = ref(false);
 const aiRuntime = ref<Record<string, AiRuntime>>({});
 const alerts = ref<AlertRuntime[]>([]);
 const clipsTab = ref<'clips' | 'events'>('clips');
@@ -549,6 +553,7 @@ function readString(key: string): string | null {
           Events<span v-if="newAlerts > 0" class="new-clip-badge">+{{ newAlerts }}</span>
         </button>
         <button :class="{ primary: timelineOpen }" @click="timelineOpen = true">Timeline</button>
+        <button v-if="canConfigure" :class="{ primary: discoveryOpen }" @click="discoveryOpen = true">Discover</button>
         <button :class="{ primary: storageOpen }" @click="storageOpen = true">
           Storage<span v-if="storageWarning !== null" class="new-clip-badge">!</span>
         </button>
@@ -587,6 +592,7 @@ function readString(key: string): string | null {
               :can-configure="canConfigure"
               @configure="editing = camera"
               @ai-configure="editingAi = camera"
+              @ptz="editingPtz = camera"
             />
           </div>
         </div>
@@ -620,6 +626,8 @@ function readString(key: string): string | null {
 
     <MotionEditor v-if="editing" :camera="editing" @close="editing = null" @saved="onMotionSaved" />
     <AiEditor v-if="editingAi" :camera="editingAi" @close="editingAi = null" @saved="onAiSaved" />
+    <PtzPanel v-if="editingPtz" :camera="editingPtz" @close="editingPtz = null" />
+    <OnvifDiscovery v-if="discoveryOpen" @close="discoveryOpen = false" />
     <TimelinePlayer
       v-if="timelineOpen"
       :cameras="cameras"

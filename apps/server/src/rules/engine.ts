@@ -55,6 +55,11 @@ export interface RuleEngineOptions {
    */
   snapshot?: (cameraId: string, labels: string[]) => Promise<string | undefined>;
   scheduleActive?: (scheduleIds: string[], at: number) => boolean;
+  /**
+   * Executes `then.ptz`; injected so the engine has no ONVIF dependency.
+   * Throws when the camera cannot move, which is reported as a failed action.
+   */
+  ptz?: (request: { cameraId: string; preset: string }) => Promise<void>;
   now?: () => number;
   log?: (line: string) => void;
   onEvent?: (event: RuleEngineEvent) => void;
@@ -211,20 +216,32 @@ export class RuleEngine {
       }
     }
 
-    for (const [action, configured] of [
-      ['ptz', rule.then.ptz],
-      ['script', rule.then.script],
-    ] as const) {
-      if (configured === undefined) continue;
-      // Both actions are intentionally not executed yet: PTZ needs the ONVIF
-      // device layer and scripts need an explicit trust model. Saying so once per
-      // rule is better than a silent no-op.
-      const key = `${rule.id}|${action}`;
+    const ptz = rule.then.ptz;
+    if (ptz !== undefined) {
+      const cameraId = ptz.cameraId ?? trigger.cameraId;
+      if (this.options.ptz === undefined) {
+        actions.push({ action: 'ptz', ok: false, detail: 'PTZ control is unavailable' });
+      } else {
+        try {
+          await this.options.ptz({ cameraId, preset: ptz.preset });
+          actions.push({ action: 'ptz', ok: true, detail: `${cameraId} → ${ptz.preset}` });
+        } catch (error) {
+          actions.push({ action: 'ptz', ok: false, detail: message(error) });
+        }
+      }
+    }
+
+    const script = rule.then.script;
+    if (script !== undefined) {
+      // Scripts are not executed: they need an explicit trust model (paths, args,
+      // environment) before a camera event may run them. Saying so once per rule is
+      // better than a silent no-op.
+      const key = `${rule.id}|script`;
       if (!this.reportedUnsupported.has(key)) {
         this.reportedUnsupported.add(key);
-        this.options.log?.(`rule "${rule.id}": the ${action} action is not implemented yet and is being skipped`);
+        this.options.log?.(`rule "${rule.id}": the script action is not implemented yet and is being skipped`);
       }
-      actions.push({ action, ok: false, detail: 'not implemented' });
+      actions.push({ action: 'script', ok: false, detail: 'not implemented' });
     }
 
     const outcome: RuleOutcome = {

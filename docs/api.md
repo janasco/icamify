@@ -97,11 +97,26 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | POST | `/api/cameras/:id/ai/detect` | operator | One analysis now (`{boxes?}` optional); returns detections + status. |
 | GET | `/api/ai/providers?health=1` | optional | Provider status (requests, errors, circuit) and, for a signed-in caller, a live health probe. |
 | GET | `/api/rules` | optional | Configured rules and which notification channels are implemented. |
+| GET | `/api/onvif` | optional | Discovery state and PTZ defaults (credential *presence*, never values). |
+| POST | `/api/onvif/scan` | operator | WS-Discovery probe (`{timeoutMs?}`); devices carry a `configured` flag. |
+| POST | `/api/onvif/describe` | operator | `{host, port?, username?, password?}`; device info, profiles, URIs (masked) and presets. |
+| GET | `/api/cameras/:id/ptz` | optional | Endpoint, reachability, presets and patrol state. |
+| POST | `/api/cameras/:id/ptz/refresh` | operator | Reads the device's own presets and merges them into the status. |
+| POST | `/api/cameras/:id/ptz/move` | operator | `{pan?, tilt?, zoom?, durationMs?}` (`-1…1`, clamped); one `ContinuousMove`. |
+| POST | `/api/cameras/:id/ptz/stop` | operator | Stops the move. |
+| POST | `/api/cameras/:id/ptz/preset` | operator | `{name}`; token → `GotoPreset`, position → `AbsoluteMove`, else by name. |
+| POST | `/api/cameras/:id/ptz/patrol` | operator | `{enabled}`; starts or stops the preset tour for this process. |
 | WS (upgrade) | `/ws` | optional | Control channel: status push + WebRTC signaling + motion/clip/AI/alert events. |
 
-Not implemented yet: ONVIF scan, PTZ commands, PTZ/script rule actions,
-email/MQTT/Telegram delivery, and settings writes beyond motion and AI tuning
-(Phase 4b). The console links no dead controls for them.
+PTZ calls reach the camera directly, so their failures are the camera's: an
+unreachable device answers `502 ptz-unreachable` (a bad password is
+`502 ptz-unauthorized`, not `401`, because the session is fine), a device without
+PTZ is `409 ptz-unsupported`, a missing preset is `404`, and a silent camera is
+`504`. A manual move pauses any running patrol for 60 seconds.
+
+Not implemented yet: the `then.script` rule action, email/MQTT/Telegram delivery,
+and settings writes beyond motion and AI tuning. The console links no dead controls
+for them.
 
 ---
 
@@ -336,8 +351,9 @@ provider circuit for 30 s.
 
 A matching rule executes, in order: index a `rule` event (`markEvent.label` or the
 rule name), start/extend an alert clip (`then.record.seconds`), save a snapshot
-(`then.snapshot`), deliver notifications (`then.notify`). `then.ptz` and
-`then.script` are reported as `not implemented` in the outcome and warned once.
+(`then.snapshot`), move a camera (`then.ptz`, via ONVIF; the outcome names the
+camera and preset, or the camera's error), deliver notifications (`then.notify`).
+`then.script` is reported as `not implemented` in the outcome and warned once.
 
 Webhook payloads are `POST`ed as JSON with `content-type: application/json` and,
 when the channel has `hmacSecret`, an `x-icamify-signature: sha256=<hex>` header

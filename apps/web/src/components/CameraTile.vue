@@ -11,7 +11,7 @@ const props = defineProps<{
   ai?: AiRuntime | null;
   canConfigure?: boolean;
 }>();
-const emit = defineEmits<{ (event: 'configure'): void; (event: 'ai-configure'): void }>();
+const emit = defineEmits<{ (event: 'configure'): void; (event: 'ai-configure'): void; (event: 'ptz'): void }>();
 
 const tile = ref<HTMLDivElement | null>(null);
 const video = ref<HTMLVideoElement | null>(null);
@@ -255,6 +255,7 @@ watch(
           >
             ✳
           </button>
+          <button v-if="camera.ptz.supported" class="icon-button" title="PTZ control" @click.stop="emit('ptz')">✥</button>
           <button class="icon-button" title="Snapshot" @click.stop="openSnapshot">◉</button>
           <button class="icon-button" title="Reconnect" @click.stop="retry">↻</button>
         </div>

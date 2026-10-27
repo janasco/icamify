@@ -6,8 +6,9 @@ signaling.
 
 **Phase:** 1 (CLI, config, diagnostics), 2 (HTTP/WS/live view/signaling),
 3 (recording, pre-buffer, motion, clip playback), 4 (AI gateway, detections,
-rules, webhook alerts), 5 (retention, archive, timeline). ONVIF/PTZ (4b) is the
-remaining backend phase.
+rules, webhook alerts), 4b (ONVIF discovery, PTZ control and patrols),
+5 (retention, archive, timeline). The script rule action and non-webhook
+notification channels remain.
 
 ```bash
 npx icamify serve --config config/icamify.json   # the normal way to run iCamify
@@ -52,7 +53,8 @@ src/
   ai/service.ts              motion → frame → detector → events; AI tuning API
   ai/plugins.ts              plugin discovery + trust gate (manifest scan)
   ai/snapshots.ts            snapshot paths, safe resolution, writer
-  rules/engine.ts            rule evaluation, cooldowns, recording/snapshot/notify actions
+  rules/engine.ts            rule evaluation, cooldowns, recording/snapshot/notify/PTZ actions
+  onvif/service.ts           endpoint resolution, client cache, PTZ moves, patrol timers, discovery
   alerts/notifier.ts         webhook delivery, HMAC signing, dedupe
   storage/service.ts         retention timer, volume plans, detection pruning, disk warnings
   storage-paths.ts           rootDir/stateDir/recordingsDir resolution
@@ -64,8 +66,9 @@ test/
   signaling.test.ts           9 tests: SDP validation, sessions, caps, failures
   recording.test.ts           7 tests: adoption, motion events, range playback, zone API
   ai.test.ts                  8 tests: filtering, crop remap, snapshots, throttling, overrides
-  rules.test.ts              10 tests: rule actions, cooldowns, schedules, webhook HMAC, dedupe
+  rules.test.ts              11 tests: rule actions, cooldowns, schedules, webhook HMAC, dedupe, PTZ
   storage.test.ts            10 tests: storage overview, dry run, purge, timeline, protect/delete, 410s
+  onvif.test.ts              11 tests: endpoint resolution, presets, patrol pause, PTZ HTTP routes
   helpers.ts                 fixtures: stub toolchain, ephemeral server, WS clients
 ```
 
@@ -135,7 +138,7 @@ reason on `/api/storage` rather than failing startup.
 
 ## Not implemented yet
 
-ONVIF discovery/PTZ and the PTZ/script rule actions (Phase 4b), email/MQTT/Telegram
+The `then.script` rule action, email/MQTT/Telegram
 delivery (only webhooks are implemented), boot-time disk ↔ index reconciliation,
 and a WebRTC media engine (signaling is ready; the engine seam is empty by
 design). SFTP archiving requires the OpenSSH client and key authentication.

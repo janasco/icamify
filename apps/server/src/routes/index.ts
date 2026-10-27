@@ -14,7 +14,9 @@ import type { AuthService, Principal } from '../http/auth.ts';
 import { HttpError, readJsonBody, sendBuffer, sendJson } from '../http/responses.ts';
 import type { RouteContext, Router } from '../http/router.ts';
 import { createMjpegHandler } from '../live/mjpeg.ts';
+import { OnvifError } from '@icamify/onvif';
 import type { MotionService } from '../motion/service.ts';
+import type { OnvifService } from '../onvif/service.ts';
 import type { RecordingManager } from '../recording/manager.ts';
 import type { CameraRuntime, CameraView } from '../runtime.ts';
 import type { StorageService } from '../storage/service.ts';
@@ -45,6 +47,7 @@ export interface ApiDeps {
   rules?: RuleEngine;
   gateway?: Gateway;
   storage?: StorageService;
+  onvif?: OnvifService;
   snapshotsDir?: string;
   log?: (line: string) => void;
 }
@@ -691,6 +694,185 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
     { auth: 'required', role: 'operator' },
   );
 
+  // -- ONVIF / PTZ -----------------------------------------------------------
+
+  const requireOnvif = (): OnvifService => {
+    if (deps.onvif === undefined) {
+      throw new HttpError(503, 'onvif-unavailable', 'ONVIF control is not enabled on this server.');
+    }
+    return deps.onvif;
+  };
+
+  router.get(
+    '/api/onvif',
+    (context) => {
+      requireView(context);
+      const onvif = requireOnvif();
+      sendJson(context.res, 200, {
+        discovery: {
+          enabled: onvif.discoveryEnabled,
+          ...(deps.config.onvif.discovery?.multicastAddress === undefined
+            ? {}
+            : { multicastAddress: deps.config.onvif.discovery.multicastAddress }),
+          ...(deps.config.onvif.discovery?.timeoutMs === undefined
+            ? {}
+            : { timeoutMs: deps.config.onvif.discovery.timeoutMs }),
+        },
+        defaults: {
+          timeoutMs: deps.config.onvif.defaults?.timeoutMs ?? 8000,
+          // Presence, never the value: credentials must not reach the browser.
+          hasCredentials: deps.config.onvif.defaults?.username !== undefined,
+        },
+        controlledCameras: onvif.controlledCameraIds(),
+      });
+    },
+    { auth: 'optional' },
+  );
+
+  router.post(
+    '/api/onvif/scan',
+    async (context) => {
+      const body = await readJsonBody(context.req, { maxBytes: 4 * 1024 }).catch(() => ({}) as Record<string, unknown>);
+      const timeoutMs = typeof body.timeoutMs === 'number' ? Math.min(15_000, Math.max(500, body.timeoutMs)) : undefined;
+      try {
+        const result = await requireOnvif().scan(timeoutMs === undefined ? {} : { timeoutMs });
+        deps.log?.(`onvif discovery by ${context.principal?.username ?? 'anonymous'}: ${result.devices.length} device(s)`);
+        sendJson(context.res, 200, result);
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  // Used by "inspect" on a discovered device, and by an operator validating a
+  // camera before adding it. Credentials in the body are used once, never stored.
+  router.post(
+    '/api/onvif/describe',
+    async (context) => {
+      const body = await readJsonBody(context.req, { maxBytes: 4 * 1024 });
+      const host = typeof body.host === 'string' ? body.host.trim() : '';
+      if (!/^[A-Za-z0-9._-]+$/.test(host)) {
+        throw new HttpError(400, 'invalid-host', 'host must be a hostname or IPv4 address.');
+      }
+      const port = body.port === undefined ? 80 : Number(body.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+        throw new HttpError(400, 'invalid-port', 'port must be an integer between 1 and 65535.');
+      }
+      const credentials =
+        typeof body.username === 'string' && body.username.length > 0 && typeof body.password === 'string'
+          ? { username: body.username, password: body.password }
+          : undefined;
+      try {
+        const result = await requireOnvif().describe({ host, port, ...(credentials === undefined ? {} : { credentials }) });
+        sendJson(context.res, 200, result);
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.get(
+    '/api/cameras/:id/ptz',
+    (context) => {
+      requireView(context);
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      sendJson(context.res, 200, requireOnvif().status(camera.id));
+    },
+    { auth: 'optional' },
+  );
+
+  // Loads the device's own presets; the configured list is available offline.
+  router.post(
+    '/api/cameras/:id/ptz/refresh',
+    async (context) => {
+      try {
+        const status = await requireOnvif().refresh(deps.runtime.requireCamera(context.params.id ?? '').id);
+        sendJson(context.res, 200, status);
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.post(
+    '/api/cameras/:id/ptz/move',
+    async (context) => {
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      const body = await readJsonBody(context.req, { maxBytes: 4 * 1024 });
+      const vector = {
+        ...(body.pan === undefined ? {} : { pan: clampUnit(body.pan) }),
+        ...(body.tilt === undefined ? {} : { tilt: clampUnit(body.tilt) }),
+        ...(body.zoom === undefined ? {} : { zoom: clampUnit(body.zoom) }),
+      };
+      if (Object.keys(vector).length === 0) {
+        throw new HttpError(400, 'empty-move', 'Provide at least one of pan, tilt or zoom.');
+      }
+      const durationMs = Math.min(10_000, Math.max(100, Number(body.durationMs ?? 500)));
+      try {
+        await requireOnvif().move(camera.id, vector, durationMs);
+        deps.log?.(`PTZ move ${camera.id} by ${context.principal?.username ?? 'anonymous'}: ${JSON.stringify(vector)} ${durationMs}ms`);
+        sendJson(context.res, 200, { moved: true, cameraId: camera.id, ...vector, durationMs });
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.post(
+    '/api/cameras/:id/ptz/stop',
+    async (context) => {
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      try {
+        await requireOnvif().stop(camera.id);
+        sendJson(context.res, 200, { stopped: true, cameraId: camera.id });
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.post(
+    '/api/cameras/:id/ptz/preset',
+    async (context) => {
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      const body = await readJsonBody(context.req, { maxBytes: 4 * 1024 });
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (name.length === 0) throw new HttpError(400, 'invalid-preset', 'name is required.');
+      try {
+        await requireOnvif().gotoPreset(camera.id, name);
+        deps.log?.(`PTZ preset "${name}" on ${camera.id} by ${context.principal?.username ?? 'anonymous'}`);
+        sendJson(context.res, 200, { cameraId: camera.id, preset: name, moved: true });
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.post(
+    '/api/cameras/:id/ptz/patrol',
+    async (context) => {
+      const camera = deps.runtime.requireCamera(context.params.id ?? '');
+      const body = await readJsonBody(context.req, { maxBytes: 4 * 1024 });
+      if (typeof body.enabled !== 'boolean') {
+        throw new HttpError(400, 'invalid-patrol', 'enabled must be true or false.');
+      }
+      try {
+        const status = await requireOnvif().setPatrol(camera.id, body.enabled);
+        deps.log?.(`PTZ patrol ${body.enabled ? 'started' : 'stopped'} on ${camera.id} by ${context.principal?.username ?? 'anonymous'}`);
+        sendJson(context.res, 200, status);
+      } catch (error) {
+        throw onvifHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
   // -- layouts ---------------------------------------------------------------
 
   router.get(
@@ -824,6 +1006,33 @@ function startOfDay(at: number): number {
 const DAY_MS = 86_400_000;
 /** Segments and events per timeline request; a day of heavy motion can exceed it. */
 const TIMELINE_LIMIT = 500;
+
+/** Camera-side failures are gateway errors, except bad input and a missing preset. */
+function onvifHttpError(error: unknown): HttpError {
+  if (error instanceof HttpError) return error;
+  if (error instanceof OnvifError) {
+    switch (error.code) {
+      case 'invalid-target':
+        return new HttpError(404, 'ptz-invalid-target', error.message);
+      case 'unsupported':
+        return new HttpError(409, 'ptz-unsupported', error.message);
+      case 'timeout':
+        return new HttpError(504, 'ptz-timeout', error.message);
+      case 'unauthorized':
+        // 401 would look like an iCamify session problem; the session is fine.
+        return new HttpError(502, 'ptz-unauthorized', error.message);
+      default:
+        return new HttpError(502, `ptz-${error.code}`, error.message);
+    }
+  }
+  return new HttpError(502, 'ptz-failed', error instanceof Error ? error.message : String(error));
+}
+
+function clampUnit(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(1, Math.max(-1, parsed));
+}
 
 function versionString(toolchain: FfmpegToolchain): string {
   const { major, minor, patch } = toolchain.ffmpeg.version;

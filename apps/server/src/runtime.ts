@@ -97,6 +97,8 @@ export interface CameraRuntimeOptions {
   recording?: RecordingManager;
   motionStatus?: (cameraId: string) => MotionStatusView | undefined;
   aiStatus?: (cameraId: string) => AiStatusView | undefined;
+  /** Whether an ONVIF endpoint exists for the camera; config alone is not enough. */
+  ptzSupported?: (camera: CameraConfig) => boolean;
   log?: (line: string) => void;
 }
 
@@ -197,7 +199,7 @@ export class CameraRuntime {
               ...(ai.lastError === undefined ? {} : { lastError: ai.lastError }),
             }),
       },
-      ptz: { supported: camera.ptz?.enabled === true || camera.ptz !== undefined },
+      ptz: { supported: this.options.ptzSupported?.(camera) ?? camera.ptz !== undefined },
       hasSubStream: camera.streams.sub !== undefined,
       source: describeSource(camera.streams.main),
       snapshotUrl: `/api/cameras/${encodeURIComponent(camera.id)}/snapshot.jpg`,

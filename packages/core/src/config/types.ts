@@ -275,6 +275,10 @@ export interface PtzPreset {
 
 export interface PtzConfig {
   enabled?: boolean;
+  /** ONVIF service host; defaults to the camera's source host. */
+  host?: string;
+  /** ONVIF service port; defaults to 80. */
+  port?: number;
   profileToken?: string;
   presets?: PtzPreset[];
   patrol?: {

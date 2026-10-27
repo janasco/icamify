@@ -15,9 +15,14 @@ tag the event), and now enforces storage: per-volume age and size quotas, a free
 disk floor, archive-then-delete to local/S3/SFTP, detection-history pruning, and a
 day-long timeline that scrubs across clips and plays them in the browser.
 
+Cameras are also discovered and steered: WS-Discovery finds ONVIF devices on the
+subnet, PTZ control (continuous/absolute moves, presets, scheduled patrols) is
+exposed in the console, and a rule can aim a camera when it fires.
+
 WebRTC signaling, SDP validation and session accounting are implemented; the
 WebRTC *media* engine is the one remaining adapter and is reported honestly rather
-than faked. ONVIF/PTZ control (4b) and the resizable layout editor (6) remain.
+than faked. Email/MQTT/Telegram delivery and the resizable layout editor (6)
+remain.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
@@ -26,7 +31,7 @@ than faked. ONVIF/PTZ control (4b) and the resizable layout editor (6) remain.
 | 2 | HTTP API + auth, control WS, MSE/MJPEG live view, WebRTC signaling, Vue grid console | ✅ done |
 | 3 | Direct-to-disk recording, pre-buffer ring, pixel motion + zone matrix, recording index + clip playback | ✅ done |
 | 4 | AI gateway (CodeProject.AI/DeepStack/generic/plugin), label+confidence gating, rules engine, webhook notifications, alert clips | ✅ done |
-| 4b | ONVIF WS-Discovery + PTZ control/patrols, script/PTZ rule actions, email/MQTT/Telegram delivery | not started |
+| 4b | ONVIF WS-Discovery + PTZ control/patrols, PTZ rule action, script action + email/MQTT/Telegram delivery | ✅ done (PTZ and discovery; script/delivery still pending) |
 | 5 | Retention enforcement (age/size/disk floor), archive to local/S3/SFTP, detection pruning, timeline player | ✅ done |
 | 6 | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
 
@@ -225,9 +230,13 @@ npm run config:schema      # print the JSON Schema
 - **Only webhook delivery is implemented.** Email, MQTT and Telegram channels are
   validated and reported by `/api/rules` as `implemented: false`; a rule that
   notifies them logs the alert and skips delivery instead of pretending.
-- **Two rule actions are recognised but not executed.** `then.ptz` needs the ONVIF
-  device layer and `then.script` needs an explicit trust model; both are reported
-  as `not implemented` in the rule outcome and warned once at startup.
+- **The script rule action is recognised but not executed.** `then.script` needs
+  an explicit trust model; it is reported as `not implemented` in the rule outcome
+  and warned once. `then.ptz` does run, through the ONVIF layer, and reports the
+  camera and preset it moved to (or why the camera refused).
+- **PTZ patrols are suspended by any manual move** for a minute, and are not
+  persisted: the configured `ptz.patrol` decides what happens after a restart, and
+  the console's start/stop toggle lives only for the process.
 - **One detection task per camera.** A provider that declares several
   capabilities gets the first of `object → face → lpr → scene` (overridable per
   camera via the AI panel or `/api/cameras/:id/ai`), so a single provider cannot

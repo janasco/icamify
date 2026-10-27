@@ -16,6 +16,7 @@ import { createAppServer, type AppServer, type ListenResult, type RequestLogEntr
 import { createLiveStreamHandler } from './live/ws-stream.ts';
 import { createLiveSourceFactory } from './media/live-source.ts';
 import { MotionService, type MotionServiceEvent } from './motion/service.ts';
+import { OnvifService } from './onvif/service.ts';
 import { RecordingManager, type RecordingHubEvent } from './recording/manager.ts';
 import { registerRoutes } from './routes/index.ts';
 import { RuleEngine, type RuleEngineEvent } from './rules/engine.ts';
@@ -60,6 +61,7 @@ export interface RunningServer {
   ai: AiService;
   rules: RuleEngine;
   storage: StorageService;
+  onvif: OnvifService;
   config: ResolvedIcamifyConfig;
   toolchain: FfmpegToolchain;
   listen: ListenResult;
@@ -176,12 +178,17 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     log,
   });
 
+  // Created before the rules engine: a rule can pan a camera, and the engine must
+  // not depend on SOAP or ONVIF itself.
+  const onvif = new OnvifService({ config, log });
+
   const rules = new RuleEngine({
     config,
     recording,
     index: recording.index,
     notifier,
     scheduleActive: (ids, at) => activeSchedules(config.schedules, new Date(at), ids).active,
+    ptz: async ({ cameraId, preset }) => onvif.gotoPreset(cameraId, preset),
     snapshot: async (cameraId, labels) => {
       const camera = config.cameras.find((candidate) => candidate.id === cameraId);
       if (camera === undefined) return undefined;
@@ -275,6 +282,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     recording,
     motionStatus: (cameraId) => motion.status(cameraId),
     aiStatus: (cameraId) => aiService.status(cameraId),
+    ptzSupported: (camera) => onvif.canControl(camera),
   });
   const auth = new AuthService({ auth: config.auth, onWarning: (message) => log(`warn: ${message}`) });
   const signaling = new SignalingService({ config, log });
@@ -297,6 +305,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     ai: aiService,
     rules,
     storage,
+    onvif,
     gateway,
     snapshotsDir: storagePaths.snapshotsDir,
     version: CORE_VERSION,
@@ -470,6 +479,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   // Started even when ai.enabled is false so saved per-camera overrides are loaded
   // and reported; `analyze()` itself is a no-op while AI is disabled.
   await aiService.start();
+  await onvif.start();
 
   // Announce once so an operator sees why a camera stayed dark.
   log(
@@ -492,6 +502,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
         : 'disabled') +
       `; ${storage.volumes.filter((volume) => volume.archive !== undefined).length} archive target(s)`,
   );
+  log(
+    `onvif: PTZ for ${onvif.controlledCameraIds().length} camera(s), ` +
+      `discovery ${onvif.discoveryEnabled ? 'enabled' : 'disabled'}`,
+  );
 
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -504,6 +518,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           await liveStream.close().catch(() => undefined);
           await motion.stop().catch(() => undefined);
           await aiService.stop().catch(() => undefined);
+          await onvif.shutdown().catch(() => undefined);
           await gateway.close().catch(() => undefined);
           await storage.stop().catch(() => undefined);
           await recording.stop().catch(() => undefined);
@@ -530,6 +545,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     ai: aiService,
     rules,
     storage,
+    onvif,
     config,
     toolchain,
     listen,

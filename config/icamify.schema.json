@@ -945,6 +945,8 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": false },
+        "host": { "type": "string", "description": "ONVIF service host. Defaults to the host of the camera's stream source." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 80, "description": "ONVIF service port (HTTP), which is often not the RTSP port." },
         "profileToken": { "type": "string" },
         "presets": {
           "type": "array",
