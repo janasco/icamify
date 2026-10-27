@@ -112,6 +112,8 @@ interface SegmentRow {
   has_alert: number;
   protected: number;
   event_id: string | null;
+  archived_at: number | null;
+  archived_by: string | null;
 }
 
 interface EventRow {
@@ -286,6 +288,19 @@ export class RecordingIndex {
   /** Tombstones a row; the caller deletes the file (retention, Phase 5). */
   markDeleted(id: string, at = Date.now()): void {
     this.db.prepare('UPDATE segments SET deleted_at = ? WHERE id = ?').run(at, id);
+  }
+
+  /** Records that a copy of the segment exists on an archive target. */
+  markArchived(id: string, providerId: string, at = Date.now()): void {
+    this.db.prepare('UPDATE segments SET archived_at = ?, archived_by = ? WHERE id = ?').run(at, providerId, id);
+  }
+
+  /** Every snapshot path still referenced by an event, for pruning orphans. */
+  snapshotRefs(): string[] {
+    const rows = this.db
+      .prepare('SELECT DISTINCT snapshot FROM events WHERE snapshot IS NOT NULL')
+      .all() as unknown as Array<{ snapshot: string }>;
+    return rows.map((row) => row.snapshot);
   }
 
   /** Tombstones every segment that ended before `before` and is not protected. */
@@ -480,6 +495,8 @@ function mapSegment(row: SegmentRow, eventIds: string[]): RecordingSegment {
     hasAlert: fromInt(row.has_alert),
     eventIds,
     ...(row.protected === 1 ? { protected: true } : {}),
+    ...(row.archived_at === null ? {} : { archivedAt: Number(row.archived_at) }),
+    ...(row.archived_by === null ? {} : { archivedBy: row.archived_by }),
   };
 }
 

@@ -31,7 +31,7 @@ function segment(overrides: Partial<Parameters<RecordingIndex['insertSegment']>[
 describe('RecordingIndex', () => {
   it('creates its schema on open', () => {
     const db = index();
-    assert.equal(schemaVersion(db['db'] as never), 2);
+    assert.equal(schemaVersion(db['db'] as never), 3);
     db.close();
   });
 
@@ -50,7 +50,7 @@ describe('RecordingIndex', () => {
     legacy.close();
 
     const db = new RecordingIndex({ path });
-    assert.equal(schemaVersion(db['db'] as never), 2);
+    assert.equal(schemaVersion(db['db'] as never), 3);
     const stored = db.insertEvent({
       cameraId: CAM,
       kind: 'ai.object',
@@ -240,6 +240,21 @@ describe('RecordingIndex', () => {
     assert.equal(remaining[0]!.id, starred.id);
     assert.equal(db.getSegment(old.id) !== undefined, true, 'rows are tombstoned, not dropped');
     assert.equal(db.getSegment(kept.id) !== undefined, true);
+    db.close();
+  });
+
+  it('records archive state and lists referenced snapshots', () => {
+    const db = index();
+    const archived = db.insertSegment(segment({ path: '/archived.mkv' }));
+    db.insertEvent({ cameraId: CAM, kind: 'ai.object', startedAt: 1_000, label: 'person', snapshot: 'cam/2026-01-01/a.jpg' });
+    db.insertEvent({ cameraId: CAM, kind: 'ai.object', startedAt: 2_000, label: 'car', snapshot: 'cam/2026-01-01/b.jpg' });
+    db.insertEvent({ cameraId: CAM, kind: 'motion', startedAt: 3_000 });
+
+    assert.deepEqual(db.snapshotRefs().sort(), ['cam/2026-01-01/a.jpg', 'cam/2026-01-01/b.jpg']);
+    db.markArchived(archived.id, 'cold-s3', 7_000);
+    const stored = db.getSegment(archived.id);
+    assert.equal(stored?.archivedAt, 7_000);
+    assert.equal(stored?.archivedBy, 'cold-s3');
     db.close();
   });
 

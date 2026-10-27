@@ -21,6 +21,7 @@ import { registerRoutes } from './routes/index.ts';
 import { RuleEngine, type RuleEngineEvent } from './rules/engine.ts';
 import { CameraRuntime } from './runtime.ts';
 import { resolveStoragePaths } from './storage-paths.ts';
+import { StorageService, type StorageServiceEvent } from './storage/service.ts';
 import { SignalingService } from './webrtc/signaling.ts';
 import { WsHub } from './ws/hub.ts';
 
@@ -58,6 +59,7 @@ export interface RunningServer {
   motion: MotionService;
   ai: AiService;
   rules: RuleEngine;
+  storage: StorageService;
   config: ResolvedIcamifyConfig;
   toolchain: FfmpegToolchain;
   listen: ListenResult;
@@ -150,6 +152,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   let pushMotion: ((event: MotionServiceEvent) => void) | undefined;
   let pushAi: ((event: AiServiceEvent) => void) | undefined;
   let pushRule: ((event: RuleEngineEvent) => void) | undefined;
+  let pushStorage: ((event: StorageServiceEvent) => void) | undefined;
 
   const recording = new RecordingManager({
     config,
@@ -157,6 +160,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     indexPath: resolve(storagePaths.stateDir, 'recordings.db'),
     log,
     onEvent: (event) => pushRecording?.(event),
+  });
+
+  const storage = new StorageService({
+    config,
+    index: recording.index,
+    paths: storagePaths,
+    log,
+    onEvent: (event) => pushStorage?.(event),
   });
 
   const notifier = new Notifier({
@@ -285,6 +296,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     motion,
     ai: aiService,
     rules,
+    storage,
     gateway,
     snapshotsDir: storagePaths.snapshotsDir,
     version: CORE_VERSION,
@@ -381,6 +393,37 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     // Status changes are reflected in the camera payload the UI already tracks.
   };
 
+  pushStorage = (event: StorageServiceEvent) => {
+    switch (event.type) {
+      case 'storage:sweep':
+        hub.broadcast({ type: 'storage:sweep', volumes: event.volumes }, 'cameras');
+        return;
+      case 'storage:warning':
+        hub.broadcast(
+          {
+            type: 'storage:warning',
+            volumeId: event.volumeId,
+            message: event.message,
+            freeBytes: event.freeBytes,
+            freePercent: event.freePercent,
+          },
+          'cameras',
+        );
+        return;
+      case 'storage:prune':
+        hub.broadcast(
+          {
+            type: 'storage:prune',
+            snapshotsRemoved: event.snapshotsRemoved,
+            eventsRemoved: event.eventsRemoved,
+            bytesFreed: event.bytesFreed,
+          },
+          'cameras',
+        );
+        return;
+    }
+  };
+
   pushRule = (event: RuleEngineEvent) => {
     hub.broadcast(
       {
@@ -422,6 +465,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   // Cameras start after the listener exists: a slow RTSP handshake must not delay
   // `listen`, and a failing camera must not keep the API from coming up.
   await recording.start();
+  await storage.start();
   await motion.start();
   // Started even when ai.enabled is false so saved per-camera overrides are loaded
   // and reported; `analyze()` itself is a no-op while AI is disabled.
@@ -441,6 +485,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       `rules: ${rules.rules.filter((rule) => rule.enabled !== false).length} enabled; ` +
       `snapshots → ${storagePaths.snapshotsDir}`,
   );
+  log(
+    `storage: ${storage.volumes.length} volume(s), retention ` +
+      (storage.policy.enabled
+        ? `every ${storage.policy.intervalSeconds}s${storage.policy.dryRun ? ' (dry run)' : ''}`
+        : 'disabled') +
+      `; ${storage.volumes.filter((volume) => volume.archive !== undefined).length} archive target(s)`,
+  );
 
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -454,6 +505,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           await motion.stop().catch(() => undefined);
           await aiService.stop().catch(() => undefined);
           await gateway.close().catch(() => undefined);
+          await storage.stop().catch(() => undefined);
           await recording.stop().catch(() => undefined);
           recording.close();
           await registry.shutdown().catch(() => undefined);
@@ -477,6 +529,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     motion,
     ai: aiService,
     rules,
+    storage,
     config,
     toolchain,
     listen,

@@ -84,6 +84,12 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/recordings` | optional | Clip index, filterable and pageable (see below). |
 | GET | `/api/recordings/:id` | optional | One clip plus the events linked to it. |
 | GET | `/api/recordings/:id/file` | optional | The clip file with `Range` support. |
+| GET | `/api/recordings/:id/play.mp4?start=&duration=` | optional | Stream-copied fragmented MP4 window for timeline playback. |
+| POST | `/api/recordings/:id/protect` | operator | `{protected}`; a starred clip is never purged. |
+| DELETE | `/api/recordings/:id` | operator | Deletes the file and tombstones the row (`409` when protected). |
+| GET | `/api/timeline?cameraId=&from=&to=` | optional | Segments and events for one day, ordered for drawing. |
+| GET | `/api/storage` | optional | Volume usage, quotas, archive targets and the last sweep. |
+| POST | `/api/storage/sweep` | operator | `{volumeId?, dryRun?}`; runs retention now. |
 | GET | `/api/events` | optional | Motion/AI/rule events from the index. |
 | GET | `/api/events/:id/snapshot` | optional | Saved detection JPEG for an event (`404` when the event has none). |
 | GET | `/api/cameras/:id/ai` | optional | AI status: provider, task, labels, counters, last crop/error. |
@@ -93,9 +99,9 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/rules` | optional | Configured rules and which notification channels are implemented. |
 | WS (upgrade) | `/ws` | optional | Control channel: status push + WebRTC signaling + motion/clip/AI/alert events. |
 
-Not implemented yet: retention/purge writes, ONVIF scan, PTZ commands, PTZ/script
-rule actions, email/MQTT/Telegram delivery, and settings writes beyond motion and
-AI tuning (Phases 4b–5). The console links no dead controls for them.
+Not implemented yet: ONVIF scan, PTZ commands, PTZ/script rule actions,
+email/MQTT/Telegram delivery, and settings writes beyond motion and AI tuning
+(Phase 4b). The console links no dead controls for them.
 
 ---
 
@@ -140,6 +146,86 @@ where the bytes are; the timestamps are what the timeline should draw.
 `Content-Type` follows the container: `video/x-matroska`, `video/mp4`,
 `video/webm` or `video/mp2t`. Auth is the normal viewer requirement, so a
 `<video src>` works because the session cookie is sent with the request.
+
+## Playback for browsers
+
+Browsers do not play Matroska, and transcoding a 15-minute 4K clip to seek once is
+wasteful. `GET /api/recordings/:id/play.mp4?start=<seconds>&duration=<seconds>`
+rewrites a window into fragmented MP4 with `-c copy`:
+
+```
+ffmpeg -ss 42.500 -i clip.mkv -t 60.000 -map 0:v:0? -map 0:a:0? -c copy \
+       -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 pipe:1
+```
+
+The response is `video/mp4`, `Accept-Ranges: none`, and streams while FFmpeg runs;
+aborting the request kills the child. `start` is clamped to 24 h and `duration` to
+2 h, and a missing file is still `410 recording-missing`. Because the window is not
+ranged, the timeline issues a new request per seek — the cost of one demuxer skip.
+
+## Timeline
+
+`GET /api/timeline?cameraId=front-door&from=…&to=…` returns everything needed to
+draw one day of one camera:
+
+```json
+{
+  "cameraId": "front-door",
+  "from": 1792972800000, "to": 1793059200000,
+  "segments": [{"id":"…","startedAt":1793000941000,"endedAt":1793000945000,"hasMotion":true,"hasAlert":false,"bytes":600291,"reason":"motion"}],
+  "events": [{"id":"…","kind":"motion","startedAt":1793000941000,"peakPercent":18.75},
+             {"id":"…","kind":"ai.object","startedAt":1793000942000,"label":"person","confidence":0.91}],
+  "counts": {"segments": 1, "events": 1},
+  "truncated": false
+}
+```
+
+Segments and events are ascending by start time, capped at 500 each (`truncated`
+tells the UI to narrow the range). Ranges wider than 31 days, or inverted ones, are
+`400`. `from` defaults to local midnight and `to` to 24 h later.
+
+## Storage and retention
+
+`GET /api/storage`:
+
+```json
+{
+  "volumes": [{
+    "volumeId": "hot", "path": "/mnt/nvr",
+    "usedBytes": 412000000000, "freeBytes": 88000000000,
+    "totalBytes": 500000000000, "diskUsedBytes": 412000000000,
+    "segmentCount": 4821, "oldestAt": 1790400000000,
+    "limits": {"maxSizeBytes": 450000000000, "maxAgeHours": 720, "minFreeBytes": 50000000000},
+    "archive": {"providerId":"cold","label":"s3://icamify-archive","afterHours":48,"keepLocalDays":7}
+  }],
+  "totals": {"usedBytes": 412000000000, "freeBytes": 88000000000, "totalBytes": 500000000000,
+             "segmentCount": 4821, "snapshotBytes": 73400320, "snapshotCount": 1820},
+  "policy": {"enabled":true,"intervalSeconds":300,"strategy":"oldest-first","batchSize":50,
+             "dryRun":false,"protectFlagged":true,"warnAtPercent":90,"storeDetectionsDays":30},
+  "archiveProviders": [{"id":"cold","type":"s3","label":"s3://icamify-archive","enabled":true}],
+  "cameras": [{"cameraId":"front-door","name":"Front door","bytes":123000000,"segments":421}],
+  "lastSweep": [{"volumeId":"hot","dryRun":false,"deleted":[…],"archived":[…],"freedBytes":9000000000,"errors":[]}]
+}
+```
+
+A volume whose mount is missing reports `error` and zeroed `totalBytes`; its quotas
+cannot be evaluated, which the UI shows instead of drawing a 0 % bar.
+
+`POST /api/storage/sweep` accepts `{"volumeId": "hot", "dryRun": true}` and answers
+with the per-volume result plus a fresh overview. A dry run never unlinks a file or
+tombstones a row; a real run also prunes detection history older than
+`ai.storeDetectionsDays` and any snapshot no surviving event references.
+
+```json
+{"volumeId":"hot","dryRun":false,"startedAt":1793001000000,"finishedAt":1793001001200,
+ "scannedSegments":4821,"scannedBytes":412000000000,
+ "deleted":[{"segmentId":"…","path":"/mnt/nvr/front-door/…/clip.mkv","bytes":600291,"reason":"age"}],
+ "archived":[{"segmentId":"…","providerId":"cold","key":"front-door/2026-10-01/clip.mkv","bytes":600291}],
+ "freedBytes":600291,"errors":[]}
+```
+
+`reason` is `age`, `size` or `disk-floor`. An archived-then-failed upload appears in
+`errors` and the file is **kept**; the next sweep retries it.
 
 ## Motion tuning
 
@@ -328,6 +414,9 @@ that stop reading are dropped at 4 MiB of queued data.
 | `ai` | `{cameraId, at, task, providerId, latencyMs, detections:[{label, confidence, box?}], snapshot?}` — one analysis result; boxes are 0..1 full-frame coordinates. |
 | `ai:error` | `{cameraId, at, message}` — the detector failed, timed out or is not configured. |
 | `alert` | `{ruleId, ruleName, cameraId, at, kind, label?, confidence?, actions[], snapshot?, eventId?}` — a rule fired; `actions` reports what actually ran. |
+| `storage:sweep` | `{volumes: RetentionSweepResult[]}` — a scheduled sweep changed something (deleted, archived or failed). |
+| `storage:warning` | `{volumeId, message, freeBytes, freePercent}` — free space fell below `storage.warnAtPercent` (at most once per 15 min per volume) or the mount is unreadable. |
+| `storage:prune` | `{snapshotsRemoved, eventsRemoved, bytesFreed}` — detection history was pruned. |
 | `subscribed` | Acknowledges `subscribe`/`unsubscribe` with the current topics. |
 | `pong` | Answer to `ping`, echoing `t`. |
 | `webrtc:answer` | `{sessionId, cameraId, sdp}` for an accepted offer. |

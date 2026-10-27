@@ -1,5 +1,5 @@
 import type { Role } from '@icamify/core';
-import type { RecordedEvent, RecordingSegment } from '@icamify/storage';
+import type { RecordedEvent, RecordingSegment, RetentionSweepResult } from '@icamify/storage';
 import type { NormalizedBox } from '../motion/service.ts';
 import type { CameraView } from '../runtime.ts';
 import type { IceCandidateInit } from '../webrtc/signaling.ts';
@@ -71,6 +71,15 @@ export type ServerMessage =
       snapshot?: string;
       eventId?: string;
     }
+  | { type: 'storage:sweep'; volumes: RetentionSweepResult[] }
+  | {
+      type: 'storage:warning';
+      volumeId: string;
+      message: string;
+      freeBytes: number;
+      freePercent: number;
+    }
+  | { type: 'storage:prune'; snapshotsRemoved: number; eventsRemoved: number; bytesFreed: number }
   | { type: 'error'; code: string; message: string }
   | { type: 'webrtc:answer'; sessionId: string; cameraId: string; sdp: string }
   | { type: 'webrtc:error'; code: string; message: string };

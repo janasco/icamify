@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
  * rescanning the recording directories.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS segments (
@@ -28,11 +28,14 @@ CREATE TABLE IF NOT EXISTS segments (
   protected   INTEGER NOT NULL DEFAULT 0,
   event_id    TEXT,
   deleted_at  INTEGER,
+  archived_at INTEGER,
+  archived_by TEXT,
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_segments_camera_time ON segments(camera_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_segments_started ON segments(started_at);
 CREATE INDEX IF NOT EXISTS idx_segments_live ON segments(deleted_at, started_at);
+CREATE INDEX IF NOT EXISTS idx_segments_volume ON segments(volume_id, ended_at);
 
 CREATE TABLE IF NOT EXISTS events (
   id           TEXT PRIMARY KEY,
@@ -101,6 +104,12 @@ function migrate(db: DatabaseSync): void {
     confidence: 'REAL',
     provider_id: 'TEXT',
     snapshot: 'TEXT',
+  });
+  // v3: retention records which segments already reached an archive target, so a
+  // repeated sweep does not upload the same object again.
+  ensureColumns(db, 'segments', {
+    archived_at: 'INTEGER',
+    archived_by: 'TEXT',
   });
   db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run('schema_version', '1');
   db.prepare('UPDATE meta SET value = ? WHERE key = ?').run(String(SCHEMA_VERSION), 'schema_version');

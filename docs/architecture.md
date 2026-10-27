@@ -176,12 +176,16 @@ icamify/
 │   │   ├── README.md                ✅ scope + security behaviour
 │   │   └── src/index.ts             📐 OnvifScanner, OnvifDeviceClient, PtzClient
 │   │
-│   └── storage/                     ✅ recording index · 📐 retention (Phase 5)
-│       ├── README.md                ✅ schema, API, retention order
-│       ├── src/db.ts                ✅ node:sqlite connection, WAL, schema
-│       ├── src/recordings.ts        ✅ segments, events, links, stats, tombstones
-│       ├── src/index.ts             ✅ contracts (RetentionManager still a seam)
-│       └── test/                    ✅ 15 tests (index, queries, pruning)
+│   └── storage/                     ✅ recording index, retention, archive
+│       ├── README.md                ✅ schema, API, retention order, archive rules
+│       ├── src/db.ts                ✅ node:sqlite connection, WAL, additive migrations
+│       ├── src/recordings.ts        ✅ segments, events, links, stats, tombstones, archive state
+│       ├── src/retention.ts         ✅ archive → age → size → disk floor, batching, dry run
+│       ├── src/archive/local.ts     ✅ copy into a directory, size verified
+│       ├── src/archive/s3.ts        ✅ SigV4 PutObject, streamed UNSIGNED-PAYLOAD
+│       ├── src/archive/sftp.ts      ✅ OpenSSH `sftp -b`, key authentication
+│       ├── src/index.ts             ✅ contracts + exports
+│       └── test/                    ✅ 55 tests (index, retention, archive, SigV4 vector)
 │
 ├── plugins/
 │   └── example-ai-provider/          ✅ reference hot-loadable AI provider
@@ -214,7 +218,7 @@ seams between phases, so each can be implemented and tested in isolation.
 | `@icamify/motion` | `MotionEngine.analyze(Frame)`, `RawFrameReader`, `compileZones` | detect frames, `MotionSettings`, `ZoneGrid` | `MotionDetection` (boxes, percent, cells) |
 | `@icamify/ai` | `Gateway.detect(providerId, request)`, `matchingRules`, `unionBox` | JPEG crops, provider config | `Detection[]`, rule matches |
 | `@icamify/onvif` | `OnvifScanner`, `PtzClient` | network, credentials | devices, presets, move commands |
-| `@icamify/storage` | `RecordingIndex`, `RetentionManager` | finalized files, quotas | clip/detection/rule rows, tombstones (deletion in Phase 5) |
+| `@icamify/storage` | `RecordingIndex`, `RetentionEngine`, `ArchiveTarget` | finalized files, quotas | clip/detection/rule rows, tombstones, archive copies |
 | `@icamify/stream` | `LiveSession`, `LiveRegistry`, `LiveSource` | FFmpeg stdout, config limits | fMP4 init/fragments, MJPEG frames, viewer stats |
 | `@icamify/server` | HTTP + WS + WebRTC signaling | all of the above | browser console |
 
@@ -332,16 +336,38 @@ and respects `when.cooldownSeconds`.
 
 ### 5.4 Retention
 
+`StorageService` translates the configuration (GB → bytes, hours → ms), owns the
+timer and prunes detection history; `RetentionEngine` does the per-volume work and
+knows nothing about JSON.
+
 ```
-every purge.intervalSeconds:
-  free space < minFreeDiskGb        → delete oldest unprotected (disk floor)
-  segment age > maxAgeHours         → archive if configured, then delete
-  volume size > maxSizeGb           → delete per strategy until under quota
-  log every deletion with path/size/reason, emit storage.purge event
+every purge.intervalSeconds (and on POST /api/storage/sweep):
+  for each volume, lowest priority first:
+    1. archive   age > archive.afterHours   → target.upload(key) → markArchived
+                                              → keepLocalDays === 0 ? delete
+    2. age       age > maxAgeHours          → (archive unless already done) → delete
+    3. size      used > maxSizeGb           → delete per strategy, batch by batch,
+                                              stop the moment the volume is under quota
+    4. disk      free < minFreeDiskGb       → delete until projectedFree ≥ floor
+  then: prune events older than ai.storeDetectionsDays, and snapshots older than
+        that cutoff which no surviving event references
 ```
 
-Segments currently being written are younger than 60s and are skipped. Paths are
-resolved and checked to be inside a configured volume before deletion.
+Guarantees:
+
+- **Archive failure keeps the file.** The upload is attempted before the unlink; a
+  failed or unverified archive records an error and leaves the footage in place.
+- **Unlink, then tombstone.** A row without a file is recoverable (410, rescan); a
+  file without a row is invisible. `ENOENT` still tombstones so a manual cleanup
+  cannot wedge the sweep.
+- **One sweep at a time.** `sweep()` serializes; the interval timer, an API call
+  and a test can all ask without racing the same files.
+- **Dry run is faithful.** It computes the same deletion and archive set and writes
+  neither the filesystem nor the index.
+- **Starred clips survive.** `protectFlagged` removes protected rows from the
+  candidate list before any policy runs.
+- **Quotas fail visibly.** A missing mount reports `error` and zero capacity in the
+  storage panel instead of drawing a 0 % bar.
 
 ---
 
@@ -408,7 +434,7 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
 | **4 — AI & alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, crop-to-motion, label/confidence gating, rules engine, alert clips, webhook delivery (HMAC), console detection overlay and event log | ✅ complete |
 | **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ presets/patrols, rule actions for PTZ and scripts, email/MQTT/Telegram delivery | not started |
-| **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), timeline player with motion/AI markers, storage dashboards | planned |
+| **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), detection-history pruning, timeline player with motion/AI/rule markers, on-demand MP4 remux, storage panel | ✅ complete (SFTP needs OpenSSH + a key) |
 
 ### Exit criteria per phase
 
@@ -439,8 +465,14 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   pending hardware.)*
 - **4** — a person-only rule produces exactly one Telegram alert and one clip;
   LPR labels reach the rule engine with confidence; PTZ preset round-trips.
-- **5** — quotas are enforced within one interval; deleting a volume directory
-  is repaired by reconciliation; archived segments reappear in playback.
+- **5** — quotas are enforced within one interval; a failed archive never deletes
+  the local file; archived segments are recorded with their provider; the timeline
+  plays any clip without transcoding. *(Verified with FFmpeg 7.0.2: two real
+  Matroska clips, an age purge that archived one and deleted it, a byte-identical
+  archive copy, detection pruning that removed the old event and its snapshot but
+  kept the recent one, and `play.mp4` remuxed to a 2-second fragmented MP4 that
+  ffprobe reports as h264/mp4 — 41/41 checks. Boot-time disk reconciliation and a
+  real S3/SFTP server are still pending.)*
 
 ---
 

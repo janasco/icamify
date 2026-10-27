@@ -6,7 +6,8 @@ signaling.
 
 **Phase:** 1 (CLI, config, diagnostics), 2 (HTTP/WS/live view/signaling),
 3 (recording, pre-buffer, motion, clip playback), 4 (AI gateway, detections,
-rules, webhook alerts). ONVIF/PTZ (4b) and retention/timeline (5) are still to come.
+rules, webhook alerts), 5 (retention, archive, timeline). ONVIF/PTZ (4b) is the
+remaining backend phase.
 
 ```bash
 npx icamify serve --config config/icamify.json   # the normal way to run iCamify
@@ -53,6 +54,7 @@ src/
   ai/snapshots.ts            snapshot paths, safe resolution, writer
   rules/engine.ts            rule evaluation, cooldowns, recording/snapshot/notify actions
   alerts/notifier.ts         webhook delivery, HMAC signing, dedupe
+  storage/service.ts         retention timer, volume plans, detection pruning, disk warnings
   storage-paths.ts           rootDir/stateDir/recordingsDir resolution
   routes/index.ts            route table, roles, anonymous-viewing rule
 test/
@@ -63,6 +65,7 @@ test/
   recording.test.ts           7 tests: adoption, motion events, range playback, zone API
   ai.test.ts                  8 tests: filtering, crop remap, snapshots, throttling, overrides
   rules.test.ts              10 tests: rule actions, cooldowns, schedules, webhook HMAC, dedupe
+  storage.test.ts            10 tests: storage overview, dry run, purge, timeline, protect/delete, 410s
   helpers.ts                 fixtures: stub toolchain, ephemeral server, WS clients
 ```
 
@@ -96,9 +99,11 @@ Full reference: [docs/api.md](../../docs/api.md).
 | Motion | `GET`/`PUT /api/cameras/:id/motion` (PUT: operator) |
 | AI | `GET`/`PUT /api/cameras/:id/ai`, `POST /api/cameras/:id/ai/detect`, `GET /api/ai/providers[?health=1]` |
 | Rules | `GET /api/rules` (rules + which channels are implemented) |
-| Recordings | `GET /api/recordings`, `/api/recordings/:id`, `/api/recordings/:id/file` (Range), `/api/cameras/:id/recording`, `GET /api/events`, `GET /api/events/:id/snapshot` |
+| Recordings | `GET /api/recordings`, `/api/recordings/:id`, `/api/recordings/:id/file` (Range), `/api/recordings/:id/play.mp4` (remux window), `/api/cameras/:id/recording`, `GET /api/events`, `GET /api/events/:id/snapshot` |
+| Timeline | `GET /api/timeline` (one day: segments + events) |
+| Storage | `GET /api/storage`, `POST /api/storage/sweep` (operator), `POST /api/recordings/:id/protect` (operator), `DELETE /api/recordings/:id` (operator) |
 | Dashboards | `GET /api/layouts` |
-| Control | `WS /ws` (status push, motion, recording, AI detections, rule alerts, WebRTC signaling) |
+| Control | `WS /ws` (status push, motion, recording, AI detections, rule alerts, storage sweeps/warnings, WebRTC signaling) |
 
 ## Operational rules
 
@@ -115,13 +120,25 @@ Full reference: [docs/api.md](../../docs/api.md).
 - Camera credentials never leave the process: views use masked URLs and
   `live-argv` is redacted.
 
+## Storage
+
+`StorageService` turns the validated `storage` section into byte/millisecond
+plans, runs the retention engine on `purge.intervalSeconds` (first pass five
+seconds after boot) and prunes detection history after `ai.storeDetectionsDays`.
+It is also the only place that deletes a clip on request: file first, tombstone
+second, and `409` when the clip is starred.
+
+Sweeps are serialized, so the timer and an operator pressing **Run retention
+sweep** can never race the same files. A volume whose archive target cannot be
+built (missing credentials, password-only SFTP) keeps recording and reports the
+reason on `/api/storage` rather than failing startup.
+
 ## Not implemented yet
 
 ONVIF discovery/PTZ and the PTZ/script rule actions (Phase 4b), email/MQTT/Telegram
-delivery (only webhooks are implemented), retention/quota enforcement and archive
-(Phase 5), the visual timeline (Phase 5), and a WebRTC media engine (signaling is
-ready; the engine seam is empty by design). Clip deletion is an index tombstone
-today: nothing purges files, detection rows or snapshots yet, so storage grows until
-Phase 5 lands. `scheduled` recording evaluates windows in UTC. Custom
-`system.api.basePath` values and `corsOrigins` are not honoured yet — routes are
-always under `/api` and the console is same-origin.
+delivery (only webhooks are implemented), boot-time disk ↔ index reconciliation,
+and a WebRTC media engine (signaling is ready; the engine seam is empty by
+design). SFTP archiving requires the OpenSSH client and key authentication.
+`scheduled` recording evaluates windows in UTC. Custom `system.api.basePath` values
+and `corsOrigins` are not honoured yet — routes are always under `/api` and the
+console is same-origin.

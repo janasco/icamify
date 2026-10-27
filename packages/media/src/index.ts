@@ -68,12 +68,14 @@ export {
 export { probeStream } from './ingest/probe.ts';
 export { IngestSupervisor, cameraHealthOptions, type IngestEvent, type IngestSupervisorOptions } from './ingest/supervisor.ts';
 export { captureSnapshot, createSnapshotRunner } from './snapshot.ts';
+export { buildRemuxArgs, createRemuxStream, type RemuxOptions, type RemuxStream } from './remux.ts';
 export {
   buildPipelinePlan,
   defaultOutputTemplate,
   resolveProfileForPurpose,
   resolveRecordingsDir,
   selectSource,
+  selectStorageVolume,
   type PipelinePlan,
   type PipelinePlanOptions,
   type ResolvedProfile,

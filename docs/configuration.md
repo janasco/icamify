@@ -740,6 +740,38 @@ volume) and validate.
 }
 ```
 
+What that configuration actually does, every `storage.purge.intervalSeconds`:
+
+1. clips older than `archive.afterHours` (48 h) are uploaded under
+   `camera/YYYY-MM-DD/file`, then the local copy is kept for `keepLocalDays` (7 d);
+2. anything older than `maxAgeHours` (720 h) is archived if it was not already, then
+   deleted;
+3. the volume is slimmed to `maxSizeGb` if one is set, in batches, stopping as soon
+   as it is under quota;
+4. if free space is below `minFreeDiskGb` (20 GB), the oldest unprotected clips go
+   until the floor is met.
+
+A starred clip is never deleted (`purge.protectFlagged`, default true). If an upload
+fails, the local file is kept and the error is reported — retention would rather
+exceed quota than lose footage. `purge.dryRun` reports the same plan without
+touching anything, and the Storage panel's **Run retention sweep** does the same on
+demand.
+
+Archive target notes:
+
+- `local` copies into a directory (verify the mount is present at boot; a missing
+  mount shows as an `error` on the volume, and nothing is deleted).
+- `s3` works with AWS and S3-compatible endpoints; set `endpoint` and
+  `forcePathStyle` for MinIO/Ceph, and put `accessKeyId`/`secretAccessKey` behind
+  `${ENV}` references.
+- `sftp` uses the OpenSSH client in batch mode, so it needs `privateKeyPath` (or a
+  key the ssh agent knows). A `password`-only provider is refused with that
+  explanation instead of silently archiving nothing.
+
+Detection history follows the same clock: `ai.storeDetectionsDays` removes event
+rows older than that, then unlinks snapshots older than the same cutoff that no
+surviving event references.
+
 ### Alert only on people, only at night
 
 Use the example's `person-at-night` rule: `events: ["ai.object"]`,

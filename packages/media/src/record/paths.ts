@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CameraConfig, ResolvedIcamifyConfig, StreamProfile } from '@icamify/core';
-import { resolveProfileForPurpose, resolveRecordingsDir } from '../plan.ts';
+import { resolveProfileForPurpose, resolveRecordingsDir, selectStorageVolume } from '../plan.ts';
 
 /**
  * Where recordings live.
@@ -64,12 +64,15 @@ export function cameraRecordingPaths(
   };
 }
 
+/**
+ * Volume id that owns a camera's files.
+ *
+ * Must agree with `resolveRecordingsDir`, which uses the same selection: a file
+ * stored on volume `hot` and indexed as volume `default` would never be purged, so
+ * the two cannot be allowed to disagree.
+ */
 export function resolveVolumeId(config: ResolvedIcamifyConfig, cameraId: string): string {
-  const volumes = config.storage.volumes ?? [];
-  const assigned = volumes
-    .filter((volume) => (volume.cameraIds ?? []).includes(cameraId))
-    .sort((left, right) => (left.priority ?? 100) - (right.priority ?? 100));
-  return assigned[0]?.id ?? volumes.find((volume) => volume.id === config.storage.defaultVolume)?.id ?? 'default';
+  return selectStorageVolume(config.storage, cameraId)?.id ?? 'default';
 }
 
 /** Final, indexable path for a finished segment; never reused. */

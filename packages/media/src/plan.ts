@@ -158,26 +158,48 @@ export function buildPipelinePlan(
 }
 
 /**
+ * Which volume a camera records to.
+ *
+ * The order is explicit assignment → configured default → the highest-priority
+ * volume that accepts any camera. The last rule matters: without it, a single
+ * configured volume (or several left unassigned) would silently record into the
+ * generic recordings directory under the volume id `default`, and retention would
+ * never see those files even though the configuration claims a quota. Validation
+ * already rejects a camera no volume accepts, so the fallback is unreachable for a
+ * config that started.
+ */
+export function selectStorageVolume(
+  storage: ResolvedIcamifyConfig['storage'],
+  cameraId?: string,
+): NonNullable<ResolvedIcamifyConfig['storage']['volumes']>[number] | undefined {
+  const volumes = storage.volumes ?? [];
+  if (volumes.length === 0) return undefined;
+  const byPriority = (left: { priority?: number }, right: { priority?: number }): number =>
+    (left.priority ?? 100) - (right.priority ?? 100);
+
+  const assigned = volumes
+    .filter((volume) => cameraId !== undefined && (volume.cameraIds ?? []).includes(cameraId))
+    .sort(byPriority)[0];
+  if (assigned !== undefined) return assigned;
+
+  const explicitDefault = volumes.find((volume) => volume.id === storage.defaultVolume);
+  if (explicitDefault !== undefined) return explicitDefault;
+
+  return volumes.filter((volume) => (volume.cameraIds ?? []).length === 0).sort(byPriority)[0];
+}
+
+/**
  * Storage directories are relative to `storage.rootDir` unless absolute, which is
  * how the schema defaults are written (`rootDir: ./data`, `recordingsDir: recordings`).
  *
- * A camera that is explicitly assigned to a volume records there; otherwise the
- * default volume wins, and only then does the generic recordings directory apply.
- * Full quota/retention enforcement belongs to @icamify/storage (Phase 5).
+ * The generic recordings directory is only used when no volume can own the camera.
  */
 export function resolveRecordingsDir(
   storage: ResolvedIcamifyConfig['storage'],
   cameraId?: string,
 ): string {
   const root = storage.rootDir ?? './data';
-  const volumes = storage.volumes ?? [];
-  const assigned = volumes
-    .filter((volume) => cameraId !== undefined && (volume.cameraIds ?? []).includes(cameraId))
-    .sort((left, right) => (left.priority ?? 100) - (right.priority ?? 100));
-  const volume =
-    assigned[0] ?? volumes.find((candidate) => candidate.id === storage.defaultVolume);
-
-  const dir = volume?.path ?? storage.recordingsDir ?? 'recordings';
+  const dir = selectStorageVolume(storage, cameraId)?.path ?? storage.recordingsDir ?? 'recordings';
   return isAbsolute(dir) ? dir : join(root, dir);
 }
 

@@ -4,6 +4,7 @@ import type { CameraConfig, ResolvedIcamifyConfig, StreamProfile } from '@icamif
 import {
   MediaError,
   buildPipelinePlan,
+  cameraRecordingPaths,
   defaultOutputTemplate,
   resolveProfileForPurpose,
   selectSource,
@@ -141,6 +142,68 @@ describe('pipeline plans', () => {
   test('detect frame geometry can be overridden per call', () => {
     const plan = buildPipelinePlan(makeConfig(), CAMERA, 'detect', { detect: { width: 640, height: 360, fps: 8 } });
     assert.match(plan.args[plan.args.indexOf('-vf') + 1] ?? '', /^fps=8,scale=640:360/);
+  });
+});
+
+describe('volume selection', () => {
+  test('a single unassigned volume owns every camera', () => {
+    const config = makeConfig({
+      storage: { rootDir: '/srv/nvr', recordingsDir: 'recordings', format: 'mkv', volumes: [{ id: 'hot', path: 'bulk' }] },
+    });
+    assert.equal(
+      defaultOutputTemplate(config, CAMERA, { video: { codec: 'copy' }, container: 'mkv' }),
+      '/srv/nvr/bulk/front-door/%Y%m%d-%H%M%S.mkv',
+    );
+    assert.equal(cameraRecordingPaths(config, CAMERA).volumeId, 'hot');
+  });
+
+  test('without a default, the highest-priority accepting volume wins', () => {
+    const config = makeConfig({
+      storage: {
+        rootDir: './data',
+        recordingsDir: 'recordings',
+        format: 'mkv',
+        volumes: [
+          { id: 'slow', path: 'slow', priority: 80 },
+          { id: 'fast', path: 'fast', priority: 10 },
+        ],
+      },
+    });
+    assert.equal(cameraRecordingPaths(config, CAMERA).volumeId, 'fast');
+  });
+
+  test('an explicit camera assignment beats the default volume', () => {
+    const config = makeConfig({
+      storage: {
+        rootDir: './data',
+        recordingsDir: 'recordings',
+        format: 'mkv',
+        defaultVolume: 'bulk',
+        volumes: [
+          { id: 'bulk', path: 'bulk' },
+          { id: 'door', path: 'door', cameraIds: ['front-door'] },
+        ],
+      },
+    });
+    assert.equal(cameraRecordingPaths(config, CAMERA).volumeId, 'door');
+  });
+
+  test('the volume and the directory always agree', () => {
+    const config = makeConfig({
+      storage: {
+        rootDir: '/data',
+        recordingsDir: 'recordings',
+        format: 'mkv',
+        defaultVolume: 'bulk',
+        volumes: [
+          { id: 'bulk', path: 'bulk' },
+          { id: 'other', path: 'other', cameraIds: ['garage'] },
+        ],
+      },
+    });
+    const paths = cameraRecordingPaths(config, CAMERA);
+    assert.equal(paths.volumeId, 'bulk');
+    assert.equal(paths.root, '/data/bulk');
   });
 });
 

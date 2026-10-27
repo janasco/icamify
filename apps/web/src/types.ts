@@ -202,6 +202,8 @@ export interface RecordingSegment {
   hasAlert: boolean;
   eventIds: string[];
   protected?: boolean;
+  archivedAt?: number;
+  archivedBy?: string;
 }
 
 export interface RecordedEvent {
@@ -299,4 +301,74 @@ export interface RecordingList {
 export interface MotionResponse {
   cameraId: string;
   motion: MotionStatus | null;
+}
+
+/** Effective quotas for one volume; omitted fields mean "no limit". */
+export interface VolumeLimits {
+  maxSizeBytes?: number;
+  maxAgeHours?: number;
+  minFreeBytes?: number;
+}
+
+export interface VolumeStats {
+  volumeId: string;
+  path: string;
+  usedBytes: number;
+  freeBytes: number;
+  totalBytes: number;
+  diskUsedBytes: number;
+  segmentCount: number;
+  oldestAt?: number;
+  limits: VolumeLimits;
+  archive?: { providerId: string; label: string; afterHours: number; keepLocalDays: number };
+  error?: string;
+}
+
+export interface RetentionSweepResult {
+  volumeId: string;
+  dryRun: boolean;
+  startedAt: number;
+  finishedAt: number;
+  scannedSegments: number;
+  scannedBytes: number;
+  deleted: Array<{ segmentId: string; path: string; bytes: number; reason: 'age' | 'size' | 'disk-floor' }>;
+  archived: Array<{ segmentId: string; providerId: string; key: string; bytes: number }>;
+  freedBytes: number;
+  errors: Array<{ segmentId?: string; path?: string; message: string }>;
+}
+
+export interface StorageOverview {
+  volumes: VolumeStats[];
+  totals: {
+    usedBytes: number;
+    freeBytes: number;
+    totalBytes: number;
+    segmentCount: number;
+    snapshotBytes: number;
+    snapshotCount: number;
+  };
+  policy: {
+    enabled: boolean;
+    intervalSeconds: number;
+    strategy: 'oldest-first' | 'largest-first' | 'lowest-priority-first';
+    batchSize: number;
+    dryRun: boolean;
+    protectFlagged: boolean;
+    warnAtPercent: number;
+    storeDetectionsDays: number;
+  };
+  archiveProviders: Array<{ id: string; type: string; label: string; enabled: boolean }>;
+  cameras: Array<{ cameraId: string; name: string; bytes: number; segments: number }>;
+  lastSweep?: RetentionSweepResult[];
+}
+
+/** One day of recordings for one camera (or all cameras). */
+export interface TimelineResponse {
+  cameraId?: string;
+  from: number;
+  to: number;
+  segments: RecordingSegment[];
+  events: RecordedEvent[];
+  counts: { segments: number; events: number };
+  truncated: boolean;
 }

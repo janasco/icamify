@@ -4,6 +4,8 @@ import AiEditor from './AiEditor.vue';
 import CameraTile from './CameraTile.vue';
 import ClipsPanel from './ClipsPanel.vue';
 import MotionEditor from './MotionEditor.vue';
+import StoragePanel from './StoragePanel.vue';
+import TimelinePlayer from './TimelinePlayer.vue';
 import { api, errorMessage } from '../api';
 import type {
   AiRuntime,
@@ -52,6 +54,9 @@ const events = ref<RecordedEvent[]>([]);
 const eventsLoading = ref(false);
 const eventsError = ref<string | null>(null);
 const newAlerts = ref(0);
+const timelineOpen = ref(false);
+const storageOpen = ref(false);
+const storageWarning = ref<string | null>(null);
 
 const canConfigure = computed(() => props.me.user?.role !== 'viewer');
 
@@ -203,6 +208,16 @@ function connectControl(): void {
         },
       };
       scheduleAiClear(message.cameraId);
+      return;
+    }
+    if (message.type === 'storage:warning' && typeof message.message === 'string') {
+      storageWarning.value = message.message;
+      return;
+    }
+    if (message.type === 'storage:sweep') {
+      // The sweep may have removed clips that are on screen; a refresh keeps the
+      // drawer from offering a tombstoned segment.
+      if (clipsOpen.value) void loadClips();
       return;
     }
     if (message.type === 'alert' && typeof message.ruleId === 'string') {
@@ -533,6 +548,10 @@ function readString(key: string): string | null {
         >
           Events<span v-if="newAlerts > 0" class="new-clip-badge">+{{ newAlerts }}</span>
         </button>
+        <button :class="{ primary: timelineOpen }" @click="timelineOpen = true">Timeline</button>
+        <button :class="{ primary: storageOpen }" @click="storageOpen = true">
+          Storage<span v-if="storageWarning !== null" class="new-clip-badge">!</span>
+        </button>
         <button @click="load" :disabled="loading">{{ loading ? 'Loading…' : 'Refresh' }}</button>
       </div>
 
@@ -578,6 +597,7 @@ function readString(key: string): string | null {
         <span v-if="system">WebRTC: {{ system.transports.webrtc.available ? 'available' : (system.transports.webrtc.reason ?? 'unavailable') }}</span>
         <span v-if="clipsOpen" class="mono">{{ clipsTotal }} clips · {{ events.length }} events</span>
         <span v-if="alerts.length > 0" class="mono">last alert: {{ alerts[0]?.ruleName }}</span>
+        <span v-if="storageWarning" class="mono" style="color: var(--warn)">{{ storageWarning }}</span>
       </div>
     </section>
 
@@ -600,5 +620,12 @@ function readString(key: string): string | null {
 
     <MotionEditor v-if="editing" :camera="editing" @close="editing = null" @saved="onMotionSaved" />
     <AiEditor v-if="editingAi" :camera="editingAi" @close="editingAi = null" @saved="onAiSaved" />
+    <TimelinePlayer
+      v-if="timelineOpen"
+      :cameras="cameras"
+      :initial-camera-id="focusId"
+      @close="timelineOpen = false"
+    />
+    <StoragePanel v-if="storageOpen" :can-manage="canConfigure" @close="storageOpen = false" />
   </div>
 </template>

@@ -3,9 +3,9 @@
 Zero-plugin Vue 3 SPA built with Vite. Same origin as the API, so the session
 cookie, WebSocket and MSE socket need no CORS configuration.
 
-**Phase:** 4 (grid + MSE/MJPEG live view + motion/AI overlays + zone editor +
-clips + event log + AI settings). The visual timeline and PTZ controls come later;
-the console links no dead controls for them.
+**Phase:** 5 (grid + MSE/MJPEG live view + motion/AI overlays + zone editor +
+clips + event log + AI settings + storage panel + timeline player). PTZ controls
+come with 4b; the console links no dead controls for them.
 
 ## Layout
 
@@ -24,6 +24,8 @@ src/
     MotionEditor.vue         paintable zone matrix + sensitivity (GET/PUT motion API)
     AiEditor.vue             per-camera AI task, label filter, confidence, detect-now (GET/PUT/POST AI API)
     ClipsPanel.vue           recordings + events drawer, inline playback from the Range endpoint
+    StoragePanel.vue         volume usage, quotas, archive state, manual sweep + dry run
+    TimelinePlayer.vue       day lane: clip blocks, motion/AI/rule ticks, seek → remuxed window
 ```
 
 ## Transport ladder
@@ -82,8 +84,19 @@ src/
   declares, edit the label filter, set the confidence floor, and run **Detect now**
   against the real pipeline to see actual detections, boxes, latency and the
   snapshot.
-- Viewers see the gear and the save button disabled: the API requires `operator`,
-  and the UI does not offer an action the server will reject.
+- The **Timeline** button opens a day view for the focused camera: recorded
+  segments are blocks on a 24-hour lane, motion in amber, alert clips in red,
+  with event ticks beneath (motion, `ai.*` in green, `rule` in red). Clicking the
+  lane or a block asks `/api/recordings/:id/play.mp4` for a stream-copied window
+  starting at that instant; the playhead tracks the video and says where the window
+  sits in the day. Day boundaries are local.
+- The **Storage** button opens the storage panel: per-volume usage against the
+  configured ceiling (or against the whole disk when no ceiling exists), free
+  space, oldest clip, archive target, retention policy and per-camera totals. An
+  operator can run a sweep, defaulting to a dry run. A `storage:warning` push
+  raises the badge and prints the message in the footer.
+- Viewers see the gear, the save button and the sweep button disabled: the API
+  requires `operator`, and the UI does not offer an action the server will reject.
 
 ## Development
 

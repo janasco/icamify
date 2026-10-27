@@ -4,7 +4,7 @@ import { pipeline } from 'node:stream/promises';
 import type { ResolvedIcamifyConfig } from '@icamify/core';
 import { redactConfig } from '@icamify/core';
 import type { LiveRegistry } from '@icamify/stream';
-import type { FfmpegToolchain } from '@icamify/media';
+import { createRemuxStream, type FfmpegToolchain } from '@icamify/media';
 import type { AiOverride, AiService } from '../ai/service.ts';
 import { resolveSnapshotPath } from '../ai/snapshots.ts';
 import type { Gateway } from '@icamify/ai';
@@ -17,6 +17,7 @@ import { createMjpegHandler } from '../live/mjpeg.ts';
 import type { MotionService } from '../motion/service.ts';
 import type { RecordingManager } from '../recording/manager.ts';
 import type { CameraRuntime, CameraView } from '../runtime.ts';
+import type { StorageService } from '../storage/service.ts';
 import type { SignalingService } from '../webrtc/signaling.ts';
 
 /**
@@ -43,6 +44,7 @@ export interface ApiDeps {
   ai?: AiService;
   rules?: RuleEngine;
   gateway?: Gateway;
+  storage?: StorageService;
   snapshotsDir?: string;
   log?: (line: string) => void;
 }
@@ -59,6 +61,13 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
       throw new HttpError(503, 'recording-unavailable', 'Recording is not enabled on this server.');
     }
     return deps.recording;
+  };
+
+  const requireStorage = (): StorageService => {
+    if (deps.storage === undefined) {
+      throw new HttpError(503, 'storage-unavailable', 'Storage management is not enabled on this server.');
+    }
+    return deps.storage;
   };
 
   // -- liveness / readiness --------------------------------------------------
@@ -189,9 +198,9 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
           motion: deps.motion !== undefined,
           ai: deps.ai !== undefined,
           rules: deps.rules !== undefined,
-          retention: false,
-          // The timeline UI ships with the storage phase; the API it needs is live.
+          retention: deps.storage !== undefined,
           timeline: deps.recording !== undefined,
+          archive: (deps.config.storage.archiveProviders ?? []).some((provider) => provider.enabled !== false),
         },
       });
     },
@@ -531,6 +540,157 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
     { auth: 'optional' },
   );
 
+  // -- timeline & playback ---------------------------------------------------
+
+  // One request per visible day, so the timeline does not have to stitch clips
+  // together and page through events to draw a single screen.
+  router.get(
+    '/api/timeline',
+    (context) => {
+      requireView(context);
+      const recording = requireRecording();
+      const cameraId = context.query.get('cameraId') ?? undefined;
+      const from = parseTime(context.query.get('from')) ?? startOfDay(Date.now());
+      const to = parseTime(context.query.get('to')) ?? from + DAY_MS;
+      if (!(to > from)) {
+        throw new HttpError(400, 'invalid-range', '`to` must be greater than `from`.');
+      }
+      if (to - from > 31 * DAY_MS) {
+        throw new HttpError(400, 'range-too-large', 'The timeline covers at most 31 days per request.');
+      }
+      const base = {
+        ...(cameraId === undefined ? {} : { cameraId }),
+        from,
+        to,
+      };
+      const segments = recording.index.listSegments({ ...base, order: 'asc', limit: TIMELINE_LIMIT });
+      const events = recording.index.listEvents({ ...base, order: 'asc', limit: TIMELINE_LIMIT });
+      sendJson(context.res, 200, {
+        ...base,
+        segments,
+        events,
+        counts: { segments: recording.index.countSegments(base), events: events.length },
+        truncated: segments.length >= TIMELINE_LIMIT || events.length >= TIMELINE_LIMIT,
+      });
+    },
+    { auth: 'optional' },
+  );
+
+  // Recording files are Matroska, which a browser cannot play. This remuxes a
+  // window to fragmented MP4 without re-encoding, so the timeline can seek.
+  router.get(
+    '/api/recordings/:id/play.mp4',
+    async (context) => {
+      requireView(context);
+      const recording = requireRecording();
+      const segment = recording.segment(context.params.id ?? '');
+      if (segment === undefined) throw new HttpError(404, 'recording-not-found', 'Recording not found.');
+      const info = await stat(segment.path).catch(() => undefined);
+      if (info === undefined || !info.isFile()) {
+        throw new HttpError(
+          410,
+          'recording-missing',
+          'The recording file is no longer on disk (retention may have removed it).',
+        );
+      }
+      if (deps.toolchain === undefined) {
+        throw new HttpError(503, 'ffmpeg-unavailable', 'FFmpeg is not available on this server.');
+      }
+      const startSeconds = clampNumber(context.query.get('start'), 0, 86_400, 0);
+      const durationSeconds = clampNumber(context.query.get('duration'), 0, 7_200, 0);
+      const remux = createRemuxStream(deps.toolchain.ffmpeg.path, segment.path, {
+        ...(startSeconds > 0 ? { startSeconds } : {}),
+        ...(durationSeconds > 0 ? { durationSeconds } : {}),
+      });
+      let closed = false;
+      context.res.on('close', () => {
+        closed = true;
+        remux.child.kill('SIGKILL');
+      });
+      context.res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Cache-Control': 'private, max-age=300',
+        'Accept-Ranges': 'none',
+      });
+      remux.done.catch((error: unknown) => {
+        if (!closed) deps.log?.(`playback ${segment.id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      remux.child.stdout?.pipe(context.res);
+      await remux.done.catch(() => undefined);
+    },
+    { auth: 'optional' },
+  );
+
+  router.post(
+    '/api/recordings/:id/protect',
+    async (context) => {
+      const recording = requireRecording();
+      const storage = requireStorage();
+      const segment = recording.segment(context.params.id ?? '');
+      if (segment === undefined) throw new HttpError(404, 'recording-not-found', 'Recording not found.');
+      const body = await readJsonBody(context.req, { maxBytes: 8 * 1024 });
+      const next = typeof body.protected === 'boolean' ? body.protected : segment.protected !== true;
+      await storage.protect(segment.id, next);
+      deps.log?.(`recording ${segment.id} ${next ? 'protected' : 'unprotected'} by ${context.principal?.username ?? 'anonymous'}`);
+      sendJson(context.res, 200, { segment: recording.segment(segment.id), protected: next });
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  // Deleting a clip is recorded as a tombstone, not a row deletion: the timeline
+  // stops drawing it while the file's history stays auditable.
+  router.delete(
+    '/api/recordings/:id',
+    async (context) => {
+      const recording = requireRecording();
+      const storage = requireStorage();
+      const segment = recording.segment(context.params.id ?? '');
+      if (segment === undefined) throw new HttpError(404, 'recording-not-found', 'Recording not found.');
+      if (segment.protected === true) {
+        throw new HttpError(409, 'recording-protected', 'This clip is protected; unprotect it before deleting.');
+      }
+      try {
+        await storage.deleteSegment(segment);
+      } catch (error) {
+        throw new HttpError(500, 'delete-failed', error instanceof Error ? error.message : String(error));
+      }
+      deps.log?.(`recording ${segment.id} deleted by ${context.principal?.username ?? 'anonymous'}`);
+      sendJson(context.res, 200, { deleted: true, segmentId: segment.id });
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  // -- storage ---------------------------------------------------------------
+
+  router.get(
+    '/api/storage',
+    async (context) => {
+      requireView(context);
+      const storage = requireStorage();
+      sendJson(context.res, 200, await storage.overview());
+    },
+    { auth: 'optional' },
+  );
+
+  router.post(
+    '/api/storage/sweep',
+    async (context) => {
+      const storage = requireStorage();
+      const body = await readJsonBody(context.req, { maxBytes: 8 * 1024 });
+      const volumeId = typeof body.volumeId === 'string' && body.volumeId.length > 0 ? body.volumeId : undefined;
+      if (volumeId !== undefined && !storage.volumes.some((volume) => volume.id === volumeId)) {
+        throw new HttpError(404, 'volume-not-found', `No storage volume "${volumeId}".`);
+      }
+      const results = await storage.sweep({
+        ...(volumeId === undefined ? {} : { volumeId }),
+        dryRun: body.dryRun === true,
+      });
+      deps.log?.(`storage sweep by ${context.principal?.username ?? 'anonymous'}${body.dryRun === true ? ' (dry run)' : ''}`);
+      sendJson(context.res, 200, { volumes: results, overview: await storage.overview() });
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
   // -- layouts ---------------------------------------------------------------
 
   router.get(
@@ -647,6 +807,23 @@ function clampWidth(raw: string | null): number {
   if (!Number.isFinite(value)) return 960;
   return Math.max(80, Math.min(3840, Math.round(value)));
 }
+
+function clampNumber(raw: string | null, min: number, max: number, fallback: number): number {
+  const value = raw === null ? Number.NaN : Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Local midnight: the timeline is a day view in the operator's timezone. */
+function startOfDay(at: number): number {
+  const date = new Date(at);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+const DAY_MS = 86_400_000;
+/** Segments and events per timeline request; a day of heavy motion can exceed it. */
+const TIMELINE_LIMIT = 500;
 
 function versionString(toolchain: FfmpegToolchain): string {
   const { major, minor, patch } = toolchain.ffmpeg.version;

@@ -1,24 +1,23 @@
 # iCamify
 
 Self-hosted NVR/VMS with an FFmpeg media pipeline, low-latency browser live view,
-pixel motion, local AI (CodeProject.AI / DeepStack / LPR), ONVIF PTZ and tiered
-retention. An architectural counterpart to Agent DVR / iSpy, built as one Node.js
-process plus a zero-plugin HTML5 console.
+pixel motion, local AI (CodeProject.AI / DeepStack / LPR), tiered retention with
+archive and a scrubbing timeline. An architectural counterpart to Agent DVR / iSpy,
+built as one Node.js process plus a zero-plugin HTML5 console.
 
-**Status: Phase 4 complete — the NVR understands what it sees.** The server boots
-from validated configuration, authenticates users, serves the Vue console,
-streams cameras over fragmented MP4 (MSE) with an MJPEG fallback, records every
-configured camera direct-to-disk, runs a pixel motion engine on the sub-stream,
-sends motion frames to a local AI detector (CodeProject.AI, DeepStack, any HTTP
-endpoint or a sandboxed plugin) and executes the configured rules: record clip,
-snapshot, notify, tag the event. The console shows live motion and AI boxes with
-labels, per-tile recorder/AI state, a zone editor, an AI settings panel, a
-recordings drawer and an event log.
+**Status: Phase 5 complete — the storage loop is closed.** The server boots from
+validated configuration, authenticates users, serves the Vue console, streams
+cameras over fragmented MP4 (MSE) with an MJPEG fallback, records every configured
+camera direct-to-disk, runs a pixel motion engine on the sub-stream, sends motion
+frames to a local AI detector (CodeProject.AI, DeepStack, any HTTP endpoint or a
+sandboxed plugin), executes the configured rules (record clip, snapshot, notify,
+tag the event), and now enforces storage: per-volume age and size quotas, a free
+disk floor, archive-then-delete to local/S3/SFTP, detection-history pruning, and a
+day-long timeline that scrubs across clips and plays them in the browser.
 
 WebRTC signaling, SDP validation and session accounting are implemented; the
 WebRTC *media* engine is the one remaining adapter and is reported honestly rather
-than faked. ONVIF/PTZ control, retention enforcement and the visual timeline are
-Phases 5–6.
+than faked. ONVIF/PTZ control (4b) and the resizable layout editor (6) remain.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
@@ -28,7 +27,7 @@ Phases 5–6.
 | 3 | Direct-to-disk recording, pre-buffer ring, pixel motion + zone matrix, recording index + clip playback | ✅ done |
 | 4 | AI gateway (CodeProject.AI/DeepStack/generic/plugin), label+confidence gating, rules engine, webhook notifications, alert clips | ✅ done |
 | 4b | ONVIF WS-Discovery + PTZ control/patrols, script/PTZ rule actions, email/MQTT/Telegram delivery | not started |
-| 5 | Retention enforcement, archive, visual timeline playback | planned |
+| 5 | Retention enforcement (age/size/disk floor), archive to local/S3/SFTP, detection pruning, timeline player | ✅ done |
 | 6 | WebRTC media engine (`werift` adapter), resizable layout editor, HLS | not started |
 
 ## Requirements
@@ -68,7 +67,7 @@ npx icamify serve            # http://localhost:8060
 npx icamify probe --camera front-door --stream sub
 npx icamify ingest --camera front-door --purpose record --dry-run
 
-# every check that CI runs (typecheck + console typecheck + 325 tests)
+# every check that CI runs (typecheck + console typecheck + 376 tests)
 npm run check
 ```
 
@@ -115,7 +114,7 @@ packages/stream/  fMP4/MJPEG framing, per-camera live sessions and viewer regist
 packages/motion/  pixel motion engine: background model, zone matrix, blobs, raw-frame splitter
 packages/ai/      AI gateway: providers, mapping, bounded concurrency, circuit breaker, rule matching
 packages/onvif/   WS-Discovery + PTZ contracts
-packages/storage/ SQLite recording index (segments + events); retention/archive contracts
+packages/storage/ SQLite index, retention engine (age/size/disk floor), local+S3+SFTP archive targets
 plugins/          hot-loadable AI providers (reference implementation included)
 config/           canonical JSON Schema + annotated example
 docs/             architecture, configuration and API/streaming reference
@@ -168,6 +167,17 @@ flows, security model and per-phase exit criteria.
 - **Alerts escalate clips.** A rule firing during a motion episode turns the open
   window into an alert clip and extends it to `then.record.seconds`, so the clip
   someone looks for later is the one marked `alert`.
+- **Deletion is unlink first, tombstone second.** A row without a file is
+  recoverable (playback reports 410 and the file can be re-scanned); a file without
+  a row is invisible footage. Retention also refuses to delete a clip it was
+  supposed to archive when the upload failed, because a network blip must never
+  cost footage.
+- **One sweep order, cheapest first.** Archive (copy what is old enough) → age →
+  size ceiling → free-disk floor. Each step can make the next unnecessary, and the
+  size loop stops the moment the volume is under quota instead of deleting a batch.
+- **The timeline remuxes, it does not transcode.** Selecting a moment asks FFmpeg
+  for `-ss <offset>` + `-c copy` into fragmented MP4: no decode, no quality loss, a
+  few percent of a core, and a browser can play what Matroska cannot.
 - **Config fails fast.** Unknown keys, dangling profile/volume/schedule/channel
   references, mismatched zone masks and out-of-bounds layout tiles are startup
   errors with a JSON path; operational hazards are warnings.
@@ -188,8 +198,8 @@ npx icamify ingest --camera <id> --purpose <p>    # run one pipeline (--dry-run/
 npx icamify config validate|print|schema          # configuration commands
 npx icamify user hash                             # argon2id hash from stdin
 
-npm run check              # backend typecheck + console typecheck + 325 tests
-npm test                   # 325 tests: config, media/recorder, motion, storage index, streams, AI, rules, server
+npm run check              # backend typecheck + console typecheck + 376 tests
+npm test                   # 376 tests: config, media/recorder, motion, storage index/retention/archive, streams, AI, rules, server
 npm run web:build          # build the console into apps/web/dist
 npm run web:dev            # Vite dev server proxying /api and /ws to :8060
 npm run config:validate    # validate ./config/icamify.json
@@ -199,14 +209,19 @@ npm run config:schema      # print the JSON Schema
 
 ## Current limitations
 
-- **Retention is not enforced yet.** Clips accumulate under the recordings tree;
-  `storage.volumes[].maxSizeGb` / `maxAgeHours` and `storage.purge` are validated
-  configuration, not a running purge loop (Phase 5). Today the disk fills.
-- **No visual timeline yet.** Clips are listed newest-first and play inline with
-  byte-range seeking; the day-long scrubbing timeline is Phase 5.
-- **Detection history is never pruned.** `ai.storeDetectionsDays` and
-  `storage.volumes[].maxAgeHours` are not enforced yet, so event rows and saved
-  snapshots accumulate alongside clips (Phase 5).
+- **SFTP archiving needs the OpenSSH client and key authentication.** It is driven
+  through `sftp -b` (no runtime dependency, no SFTP stack to audit), so a provider
+  configured with a password is refused at boot with that explanation instead of
+  silently never uploading.
+- **Playback remuxes one window at a time.** Matroska becomes fragmented MP4 with
+  stream copy, which cannot seek inside the window in the browser; clicking the
+  timeline asks for a new window instead. Codecs MP4 cannot carry (for example
+  some H.265 browser combinations) will fail to play — the file itself is intact
+  and downloadable.
+- **The purge does not reconcile the index against the disk yet.** Tombstones keep
+  history, and the recorder re-adopts hot segments after a restart, but a full
+  boot-time rescan (`reconcile.ts`) is not written; deleting files behind iCamify's
+  back leaves rows that report 410 until they age out.
 - **Only webhook delivery is implemented.** Email, MQTT and Telegram channels are
   validated and reported by `/api/rules` as `implemented: false`; a rule that
   notifies them logs the alert and skips delivery instead of pretending.
