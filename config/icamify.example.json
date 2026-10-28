@@ -698,6 +698,11 @@
           "severity": "info",
           "message": "{cameraName}: plate {label} ({confidence}%)"
         },
+        "script": {
+          "path": "log-plate.mjs",
+          "args": ["--camera", "{cameraId}", "--plate", "{label}", "--at", "{time}"],
+          "timeoutSeconds": 5
+        },
         "markEvent": { "label": "lpr", "tags": ["vehicle"] }
       }
     },
@@ -792,6 +797,15 @@
         "homeAssistantDiscovery": true
       }
     ]
+  },
+
+  "scripts": {
+    "enabled": false,
+    "directories": ["./data/scripts"],
+    "timeoutSeconds": 10,
+    "maxOutputBytes": 4096,
+    "maxConcurrent": 2,
+    "environment": { "ICAMIFY_LOG_LEVEL": "info" }
   },
 
   "ai": {

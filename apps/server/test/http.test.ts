@@ -438,7 +438,7 @@ describe('AI and rules API', () => {
     });
   });
 
-  test('lists rules and channels, marking the unimplemented channels', async () => {
+  test('lists rules and channels, marking every channel as implemented', async () => {
     const config = testConfig({ auth: EMPTY_AUTH });
     config.rules = [
       { id: 'person', name: 'Person', when: { events: ['ai.object'] }, then: { notify: { channels: ['hook', 'tg'] } } },
@@ -463,7 +463,7 @@ describe('AI and rules API', () => {
         body.channels.map((channel) => [channel.id, channel.implemented]),
         [
           ['hook', true],
-          ['tg', false],
+          ['tg', true],
         ],
       );
       assert.equal(body.dedupeSeconds, 15);

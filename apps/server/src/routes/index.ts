@@ -433,7 +433,9 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
           name: channel.name,
           type: channel.type,
           enabled: channel.enabled !== false,
-          implemented: channel.type === 'webhook',
+          // Every channel type in the config schema has a transport in
+          // src/alerts, so this stays true unless one is removed again.
+          implemented: true,
         })),
         dedupeSeconds: deps.config.notifications.dedupeSeconds ?? 30,
       });

@@ -440,7 +440,7 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | **2b — WebRTC media** | WebRTC media engine (H.264 RTP ↔ ICE/DTLS via `werift`), browser player with visible fallback, demo harness | ✅ complete (resizable tile spans and the HLS segmenter are still pending) |
 | **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
 | **4 — AI & alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, crop-to-motion, label/confidence gating, rules engine, alert clips, webhook delivery (HMAC), console detection overlay and event log | ✅ complete |
-| **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ moves/presets/patrols, PTZ rule action, PTZ pad and discovery dialog in the console | ✅ complete (script action and email/MQTT/Telegram delivery still pending) |
+| **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ moves/presets/patrols, PTZ rule action, PTZ pad and discovery dialog in the console, SMTP/MQTT/Telegram delivery, opt-in script action | ✅ complete |
 | **5 — Retention & playback** | Retention manager (age/size/disk floor), archive adapters (local/S3/SFTP), detection-history pruning, timeline player with motion/AI/rule markers, on-demand MP4 remux, storage panel | ✅ complete (SFTP needs OpenSSH + a key) |
 
 ### Exit criteria per phase
@@ -479,8 +479,9 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   *(The PTZ half is verified: the ONVIF client round-trips discovery, device info,
   profiles, presets, moves and stop against a fake ONVIF device over HTTP with a
   digested 401, and the service resolves endpoints, merges device presets and
-  pauses patrols on manual moves. Telegram delivery is still not implemented and
-  a physical PTZ camera is still pending hardware.)*
+  pauses patrols on manual moves. Telegram, SMTP and MQTT delivery are verified
+  against in-process fake servers, and a physical PTZ camera is still pending
+  hardware.)*
 - **5** — quotas are enforced within one interval; a failed archive never deletes
   the local file; archived segments are recorded with their provider; the timeline
   plays any clip without transcoding. *(Verified with FFmpeg 7.0.2: two real

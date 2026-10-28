@@ -547,6 +547,21 @@ export interface NotificationsConfig {
   channels?: NotificationChannel[];
 }
 
+/**
+ * Trust model for the `then.script` rule action.
+ *
+ * Disabled by default: enabling it is an explicit operator decision that a
+ * matching rule may execute a file from one of `directories`.
+ */
+export interface ScriptsConfig {
+  enabled?: boolean;
+  directories?: string[];
+  timeoutSeconds?: number;
+  maxOutputBytes?: number;
+  maxConcurrent?: number;
+  environment?: Record<string, string>;
+}
+
 export interface ProviderCommon {
   id: string;
   name: string;
@@ -650,6 +665,7 @@ export interface IcamifyConfig {
   ai?: AiConfig;
   onvif?: OnvifConfig;
   plugins?: PluginsConfig;
+  scripts?: ScriptsConfig;
 }
 
 /** Shape returned by the loader: defaults merged in, so top-level sections exist. */
@@ -668,6 +684,7 @@ export interface ResolvedIcamifyConfig extends IcamifyConfig {
   ai: AiConfig;
   onvif: OnvifConfig;
   plugins: PluginsConfig;
+  scripts: ScriptsConfig;
 }
 
 export type ConfigIssueSeverity = 'error' | 'warning';

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CORE_VERSION, activeSchedules, loadConfig, type ResolvedIcamifyConfig } from '@icamify/core';
 import { Gateway as AiGateway, jpegSize } from '@icamify/ai';
@@ -10,7 +10,8 @@ import { LiveRegistry } from '@icamify/stream';
 import { Notifier } from './alerts/notifier.ts';
 import { createPluginResolver } from './ai/plugins.ts';
 import { AiService, type AiDetectionSummary, type AiServiceEvent, type CaptureFrame } from './ai/service.ts';
-import { snapshotRelativePath, writeSnapshot } from './ai/snapshots.ts';
+import { resolveSnapshotPath, snapshotRelativePath, writeSnapshot } from './ai/snapshots.ts';
+import { ScriptRunner } from './automation/script-runner.ts';
 import { AuthService } from './http/auth.ts';
 import { Router } from './http/router.ts';
 import { createAppServer, type AppServer, type ListenResult, type RequestLogEntry } from './http/server.ts';
@@ -21,7 +22,7 @@ import { MotionService, type MotionServiceEvent } from './motion/service.ts';
 import { OnvifService } from './onvif/service.ts';
 import { RecordingManager, type RecordingHubEvent } from './recording/manager.ts';
 import { registerRoutes } from './routes/index.ts';
-import { RuleEngine, type RuleEngineEvent } from './rules/engine.ts';
+import { RuleEngine, type RuleEngineEvent, type RuleScriptRequest } from './rules/engine.ts';
 import { CameraRuntime } from './runtime.ts';
 import { resolveStoragePaths } from './storage-paths.ts';
 import { StorageService, type StorageServiceEvent } from './storage/service.ts';
@@ -208,8 +209,31 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   const notifier = new Notifier({
     channels: config.notifications.channels ?? [],
     ...(config.notifications.dedupeSeconds === undefined ? {} : { dedupeSeconds: config.notifications.dedupeSeconds }),
+    // Snapshot attachments are read through the same confinement check as the
+    // HTTP route, so a crafted relative path cannot exfiltrate another file.
+    snapshot: async (relative) => {
+      const absolute = resolveSnapshotPath(storagePaths.snapshotsDir, relative);
+      if (absolute === undefined) return undefined;
+      const content = await readFile(absolute);
+      return { filename: basename(absolute), contentType: 'image/jpeg', content };
+    },
     log,
   });
+
+  // Script actions are opt-in: without scripts.enabled there is no runner at all,
+  // so a stray rule cannot execute anything in a default deployment.
+  const scripts =
+    config.scripts.enabled === true
+      ? new ScriptRunner({
+          enabled: true,
+          directories: config.scripts.directories ?? ['./data/scripts'],
+          ...(config.scripts.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.scripts.timeoutSeconds }),
+          ...(config.scripts.maxOutputBytes === undefined ? {} : { maxOutputBytes: config.scripts.maxOutputBytes }),
+          ...(config.scripts.maxConcurrent === undefined ? {} : { maxConcurrent: config.scripts.maxConcurrent }),
+          ...(config.scripts.environment === undefined ? {} : { environment: config.scripts.environment }),
+          log,
+        })
+      : undefined;
 
   // Created before the rules engine: a rule can pan a camera, and the engine must
   // not depend on SOAP or ONVIF itself.
@@ -222,6 +246,21 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     notifier,
     scheduleActive: (ids, at) => activeSchedules(config.schedules, new Date(at), ids).active,
     ptz: async ({ cameraId, preset }) => onvif.gotoPreset(cameraId, preset),
+    ...(scripts === undefined
+      ? {}
+      : {
+          script: async (request: RuleScriptRequest) => {
+            const result = await scripts.run(
+              {
+                path: request.path,
+                ...(request.args === undefined ? {} : { args: request.args }),
+                ...(request.timeoutSeconds === undefined ? {} : { timeoutSeconds: request.timeoutSeconds }),
+              },
+              request.context,
+            );
+            return { ok: result.ok, detail: result.detail };
+          },
+        }),
     snapshot: async (cameraId, labels) => {
       const camera = config.cameras.find((candidate) => candidate.id === cameraId);
       if (camera === undefined) return undefined;

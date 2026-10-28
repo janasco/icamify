@@ -25,8 +25,7 @@ The WebRTC media plane is real: an FFmpeg RTP source per camera feeds one
 connect or no frame paints. A checked-in demo harness (`npm run demo`) reproduces
 the whole system — fake ONVIF camera, stub detector, looping H.264 clips — and
 `npm run demo:rtc` proves video arrives over WebRTC without a browser.
-Email/MQTT/Telegram delivery, the script action, the resizable layout editor and
-HLS remain.
+The resizable layout editor and HLS remain.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
@@ -35,7 +34,7 @@ HLS remain.
 | 2 | HTTP API + auth, control WS, MSE/MJPEG live view, WebRTC signaling, Vue grid console | ✅ done |
 | 3 | Direct-to-disk recording, pre-buffer ring, pixel motion + zone matrix, recording index + clip playback | ✅ done |
 | 4 | AI gateway (CodeProject.AI/DeepStack/generic/plugin), label+confidence gating, rules engine, webhook notifications, alert clips | ✅ done |
-| 4b | ONVIF WS-Discovery + PTZ control/patrols, PTZ rule action, script action + email/MQTT/Telegram delivery | ✅ done (PTZ and discovery; script/delivery still pending) |
+| 4b | ONVIF WS-Discovery + PTZ control/patrols, PTZ rule action, script action + email/MQTT/Telegram delivery | ✅ done |
 | 5 | Retention enforcement (age/size/disk floor), archive to local/S3/SFTP, detection pruning, timeline player | ✅ done |
 | 6 | WebRTC media engine (`@icamify/rtc` + `werift`), demo harness, resizable layout editor, HLS | ✅ done (media engine; editor/HLS pending) |
 
@@ -247,13 +246,17 @@ npm run config:schema      # print the JSON Schema
   history, and the recorder re-adopts hot segments after a restart, but a full
   boot-time rescan (`reconcile.ts`) is not written; deleting files behind iCamify's
   back leaves rows that report 410 until they age out.
-- **Only webhook delivery is implemented.** Email, MQTT and Telegram channels are
-  validated and reported by `/api/rules` as `implemented: false`; a rule that
-  notifies them logs the alert and skips delivery instead of pretending.
-- **The script rule action is recognised but not executed.** `then.script` needs
-  an explicit trust model; it is reported as `not implemented` in the rule outcome
-  and warned once. `then.ptz` does run, through the ONVIF layer, and reports the
-  camera and preset it moved to (or why the camera refused).
+- **Notification channels deliver in-process.** Webhooks (HMAC-signed), SMTP
+  email (implicit TLS or STARTTLS, AUTH PLAIN/LOGIN), MQTT (QoS 0/1/2, optional
+  Home Assistant discovery) and Telegram (`sendMessage`/`sendPhoto`) need no extra
+  dependencies. Delivery failures are reported per channel in the rule outcome
+  rather than swallowed.
+- **The script rule action is opt-in and confined.** `scripts.enabled` defaults to
+  false; when it is true a script must resolve (after symlinks) inside
+  `scripts.directories`. It runs without a shell, receives the event as
+  `ICAMIFY_*` environment variables, and is bounded by a timeout, an output cap and
+  a concurrency limit. `then.ptz` does run, through the ONVIF layer, and reports
+  the camera and preset it moved to (or why the camera refused).
 - **PTZ patrols are suspended by any manual move** for a minute, and are not
   persisted: the configured `ptz.patrol` decides what happens after a restart, and
   the console's start/stop toggle lives only for the process.

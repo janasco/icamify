@@ -44,6 +44,29 @@ export interface RuleEngineEvent {
   trigger: RuleTrigger;
 }
 
+export interface RuleScriptContext {
+  ruleId: string;
+  ruleName: string;
+  cameraId: string;
+  cameraName: string;
+  kind: string;
+  label?: string;
+  confidence?: number;
+  at: number;
+  severity: string;
+  title: string;
+  message: string;
+  snapshot?: string;
+  eventId?: string;
+}
+
+export interface RuleScriptRequest {
+  path: string;
+  args?: string[];
+  timeoutSeconds?: number;
+  context: RuleScriptContext;
+}
+
 export interface RuleEngineOptions {
   config: ResolvedIcamifyConfig;
   recording?: RecordingManager;
@@ -60,6 +83,11 @@ export interface RuleEngineOptions {
    * Throws when the camera cannot move, which is reported as a failed action.
    */
   ptz?: (request: { cameraId: string; preset: string }) => Promise<void>;
+  /**
+   * Executes `then.script`; injected so the engine has no process spawning and a
+   * deployment without `scripts.enabled` simply has no runner.
+   */
+  script?: (request: RuleScriptRequest) => Promise<{ ok: boolean; detail?: string }>;
   now?: () => number;
   log?: (line: string) => void;
   onEvent?: (event: RuleEngineEvent) => void;
@@ -77,7 +105,6 @@ export class RuleEngine {
   private readonly cooldowns = new Map<string, Cooldown>();
   /** ruleId|cameraId|eventId → fire time, so start/end cannot both fire a rule. */
   private readonly firedEpisodes = new Map<string, number>();
-  private readonly reportedUnsupported = new Set<string>();
 
   constructor(options: RuleEngineOptions) {
     this.options = options;
@@ -233,15 +260,46 @@ export class RuleEngine {
 
     const script = rule.then.script;
     if (script !== undefined) {
-      // Scripts are not executed: they need an explicit trust model (paths, args,
-      // environment) before a camera event may run them. Saying so once per rule is
-      // better than a silent no-op.
-      const key = `${rule.id}|script`;
-      if (!this.reportedUnsupported.has(key)) {
-        this.reportedUnsupported.add(key);
-        this.options.log?.(`rule "${rule.id}": the script action is not implemented yet and is being skipped`);
+      if (this.options.script === undefined) {
+        actions.push({
+          action: 'script',
+          ok: false,
+          detail: 'script actions are disabled (set scripts.enabled to true to allow them)',
+        });
+      } else {
+        const { title: scriptTitle, message: scriptMessage } = this.describe(
+          rule,
+          trigger,
+          cameraName,
+          notify?.title,
+          notify?.message,
+        );
+        try {
+          const result = await this.options.script({
+            path: script.path,
+            ...(script.args === undefined ? {} : { args: script.args }),
+            ...(script.timeoutSeconds === undefined ? {} : { timeoutSeconds: script.timeoutSeconds }),
+            context: {
+              ruleId: rule.id,
+              ruleName: rule.name,
+              cameraId: trigger.cameraId,
+              cameraName,
+              kind: trigger.kind,
+              ...(trigger.label === undefined ? {} : { label: trigger.label }),
+              ...(trigger.confidence === undefined ? {} : { confidence: trigger.confidence }),
+              at: trigger.at,
+              severity: notify?.severity ?? trigger.severity ?? 'warning',
+              title: scriptTitle,
+              message: scriptMessage,
+              ...(snapshot === undefined ? {} : { snapshot }),
+              ...(alertEventId === undefined ? {} : { eventId: alertEventId }),
+            },
+          });
+          actions.push({ action: 'script', ok: result.ok, detail: result.detail });
+        } catch (error) {
+          actions.push({ action: 'script', ok: false, detail: message(error) });
+        }
       }
-      actions.push({ action: 'script', ok: false, detail: 'not implemented' });
     }
 
     const outcome: RuleOutcome = {
@@ -257,13 +315,14 @@ export class RuleEngine {
     return outcome;
   }
 
-  private buildPayload(
+  /** Title and message shared by notifications and script actions. */
+  private describe(
     rule: RuleConfig,
     trigger: RuleTrigger,
     cameraName: string,
-    notify: NonNullable<RuleConfig['then']['notify']>,
-    snapshot: string | undefined,
-  ): AlertPayload {
+    titleTemplate: string | undefined,
+    messageTemplate: string | undefined,
+  ): { title: string; message: string } {
     const values = {
       cameraName,
       cameraId: trigger.cameraId,
@@ -273,15 +332,26 @@ export class RuleEngine {
       ruleName: rule.name,
       kind: trigger.kind,
     };
-    const title = notify.title ?? `${rule.name} — ${cameraName}`;
-    const message =
-      notify.message ??
-      interpolateTemplate(
-        trigger.label === undefined
-          ? '{kind} on {cameraName} at {time}'
-          : '{label} detected on {cameraName} ({confidence}) at {time}',
+    return {
+      title: interpolateTemplate(titleTemplate ?? `${rule.name} — ${cameraName}`, values),
+      message: interpolateTemplate(
+        messageTemplate ??
+          (trigger.label === undefined
+            ? '{kind} on {cameraName} at {time}'
+            : '{label} detected on {cameraName} ({confidence}) at {time}'),
         values,
-      );
+      ),
+    };
+  }
+
+  private buildPayload(
+    rule: RuleConfig,
+    trigger: RuleTrigger,
+    cameraName: string,
+    notify: NonNullable<RuleConfig['then']['notify']>,
+    snapshot: string | undefined,
+  ): AlertPayload {
+    const { title, message } = this.describe(rule, trigger, cameraName, notify.title, notify.message);
 
     return {
       ruleId: rule.id,
@@ -293,9 +363,10 @@ export class RuleEngine {
       ...(trigger.confidence === undefined ? {} : { confidence: trigger.confidence }),
       at: trigger.at,
       severity: notify.severity ?? 'warning',
-      title: interpolateTemplate(title, values),
-      message: interpolateTemplate(message, values),
+      title,
+      message,
       ...(snapshot === undefined ? {} : { snapshot }),
+      ...(notify.attachSnapshot === true ? { attachSnapshot: true } : {}),
       ...(trigger.id === undefined ? {} : { eventId: trigger.id }),
     };
   }

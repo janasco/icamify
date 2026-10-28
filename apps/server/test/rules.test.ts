@@ -307,7 +307,6 @@ describe('RuleEngine', () => {
     });
     const index = new RecordingIndex({ path: ':memory:' });
     const { record } = recordingStub();
-    const warnings: string[] = [];
     try {
       const unavailable = new RuleEngine({ config, recording: record, index, log: () => {} });
       const blocked = await unavailable.handle({ id: 'p0', cameraId: 'front-door', kind: 'motion', at: 1 });
@@ -320,18 +319,15 @@ describe('RuleEngine', () => {
         ptz: async () => {
           throw new Error('the camera rejected the credentials');
         },
-        log: (line) => warnings.push(line),
+        log: () => {},
       });
       const outcomes = await engine.handle({ id: 'p1', cameraId: 'front-door', kind: 'motion', at: 2 });
       const actions = outcomes[0]?.actions ?? [];
       assert.equal(actions.find((action) => action.action === 'ptz')?.ok, false);
       assert.match(actions.find((action) => action.action === 'ptz')?.detail ?? '', /rejected the credentials/);
-      assert.equal(actions.find((action) => action.action === 'script')?.ok, false);
-      assert.equal(warnings.filter((line) => line.includes('not implemented')).length, 1);
-
-      // The warning is reported once per rule, not on every event.
-      await engine.handle({ id: 'p2', cameraId: 'front-door', kind: 'motion', at: 3 });
-      assert.equal(warnings.filter((line) => line.includes('not implemented')).length, 1);
+      const scriptAction = actions.find((action) => action.action === 'script');
+      assert.equal(scriptAction?.ok, false);
+      assert.match(scriptAction?.detail ?? '', /disabled/);
     } finally {
       index.close();
     }
@@ -364,12 +360,17 @@ describe('Notifier', () => {
     assert.equal(hook.received.length, 1);
   });
 
-  test('reports unimplemented channels and disabled channels', async () => {
+  test('delivers through Telegram, and reports disabled and unknown channels', async () => {
+    const urls: string[] = [];
     const notifier = new Notifier({
       channels: [
         { id: 'tg', name: 'Telegram', type: 'telegram', botToken: 'x', chatId: '1' },
         { id: 'off', name: 'Off hook', type: 'webhook', url: 'http://127.0.0.1:1/x', enabled: false },
       ],
+      fetch: (async (input: string | URL) => {
+        urls.push(String(input));
+        return new Response('{"ok":true}', { status: 200 });
+      }) as unknown as typeof fetch,
       log: () => {},
     });
     const payload: AlertPayload = {
@@ -384,7 +385,8 @@ describe('Notifier', () => {
       message: 'm',
     };
     const results = await notifier.send(payload, ['tg', 'off', 'unknown']);
-    assert.equal(results[0]?.skipped, 'not-implemented');
+    assert.equal(results[0]?.ok, true, results[0]?.error);
+    assert.match(urls[0] ?? '', /\/sendMessage$/);
     assert.equal(results[1]?.skipped, 'disabled');
     assert.equal(results[2]?.error, 'channel is not configured');
   });

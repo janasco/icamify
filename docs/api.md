@@ -114,9 +114,8 @@ unreachable device answers `502 ptz-unreachable` (a bad password is
 PTZ is `409 ptz-unsupported`, a missing preset is `404`, and a silent camera is
 `504`. A manual move pauses any running patrol for 60 seconds.
 
-Not implemented yet: the `then.script` rule action, email/MQTT/Telegram delivery,
-and settings writes beyond motion and AI tuning. The console links no dead controls
-for them.
+Not implemented yet: settings writes beyond motion and AI tuning. The console links
+no dead controls for them.
 
 ---
 
@@ -352,8 +351,9 @@ provider circuit for 30 s.
 A matching rule executes, in order: index a `rule` event (`markEvent.label` or the
 rule name), start/extend an alert clip (`then.record.seconds`), save a snapshot
 (`then.snapshot`), move a camera (`then.ptz`, via ONVIF; the outcome names the
-camera and preset, or the camera's error), deliver notifications (`then.notify`).
-`then.script` is reported as `not implemented` in the outcome and warned once.
+camera and preset, or the camera's error), deliver notifications (`then.notify`),
+and run a script (`then.script`, when `scripts.enabled` is true; the outcome carries
+the command, exit code and first stderr line, or why the script was refused).
 
 Webhook payloads are `POST`ed as JSON with `content-type: application/json` and,
 when the channel has `hmacSecret`, an `x-icamify-signature: sha256=<hex>` header

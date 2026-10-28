@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { isAbsolute, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 import { zoneMaskIssues } from './mask.ts';
@@ -618,6 +619,36 @@ export function checkSemantics(config: ResolvedIcamifyConfig): ConfigIssue[] {
     if (rule.enabled !== false && Object.keys(rule.then).length === 0) {
       warn(`${path}.then`, 'no-actions', `rule "${rule.id}" has no actions`);
     }
+
+    const script = rule.then.script;
+    if (script !== undefined) {
+      if (config.scripts.enabled !== true) {
+        warn(
+          `${path}.then.script`,
+          'scripts-disabled',
+          `rule "${rule.id}" has a script action but scripts.enabled is false; it will be reported as disabled, not run`,
+        );
+      }
+      // An absolute path bypasses the directory search, so prove it is inside one
+      // of the configured directories. Relative paths are confined by the runner.
+      if (isAbsolute(script.path)) {
+        const roots = (config.scripts.directories ?? []).map((directory) => resolve(directory));
+        const target = resolve(script.path);
+        const inside = roots.some((root) => target === root || target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`));
+        if (!inside) {
+          error(
+            `${path}.then.script.path`,
+            'script-outside-directories',
+            `rule "${rule.id}" runs "${script.path}", which is outside scripts.directories`,
+          );
+        }
+      }
+    }
+  }
+
+  // ---- scripts ------------------------------------------------------------
+  if (config.scripts.enabled === true && (config.scripts.directories ?? []).length === 0) {
+    warn('scripts.directories', 'no-script-directories', 'scripts.enabled is true but no directories are configured');
   }
 
   // ---- plugins ------------------------------------------------------------

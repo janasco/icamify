@@ -731,6 +731,24 @@
         "timeoutMs": { "type": "integer", "minimum": 100, "default": 15000 },
         "workerMemoryMb": { "type": "integer", "minimum": 32, "default": 256 }
       }
+    },
+    "scripts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Trust model for the `then.script` rule action. Disabled by default. When enabled, a matching rule may run a file from `directories`; the event is passed as ICAMIFY_* environment variables and no shell is involved.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "directories": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["./data/scripts"],
+          "description": "A script path (after resolving symlinks) must stay inside one of these directories."
+        },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "default": 10 },
+        "maxOutputBytes": { "type": "integer", "minimum": 0, "default": 4096, "description": "Captured stdout/stderr kept per run and reported in the rule outcome." },
+        "maxConcurrent": { "type": "integer", "minimum": 1, "maximum": 32, "default": 2 },
+        "environment": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra environment variables handed to every script; ICAMIFY_* event variables are added on top." }
+      }
     }
   },
   "$defs": {

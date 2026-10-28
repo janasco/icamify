@@ -180,6 +180,13 @@ export const DEFAULT_CONFIG: ResolvedIcamifyConfig = {
     timeoutMs: 15000,
     workerMemoryMb: 256,
   },
+  scripts: {
+    enabled: false,
+    directories: ['./data/scripts'],
+    timeoutSeconds: 10,
+    maxOutputBytes: 4096,
+    maxConcurrent: 2,
+  },
 };
 
 /** Config keys that may be overridden directly from the process environment. */

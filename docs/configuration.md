@@ -682,11 +682,39 @@ Conditions are ANDed. Empty `cameraIds` / `events` mean "any". `events` values:
 
 Actions: `record`, `snapshot`, `notify`, `ptz`, `script`, `markEvent`. Rules run
 in ascending `priority`; `cooldownSeconds` is enforced per rule per camera.
-`script.path` is executed without a shell; the event JSON arrives on stdin.
-
 Message placeholders: `{cameraName}`, `{label}`, `{confidence}`, `{time}` (and
 `{cameraId}`). Notification channels: `webhook` (optional HMAC-SHA256 signature),
-`email` (SMTP), `mqtt` (optional Home Assistant discovery), `telegram`.
+`email` (SMTP with STARTTLS or implicit TLS), `mqtt` (QoS 0/1/2, optional Home
+Assistant discovery), `telegram` (`sendMessage`, or `sendPhoto` when the rule sets
+`notify.attachSnapshot`).
+
+### Script actions
+
+`then.script` is gated by the `scripts` section. It is **disabled by default**:
+
+```json
+{
+  "scripts": {
+    "enabled": false,
+    "directories": ["./data/scripts"],
+    "timeoutSeconds": 10,
+    "maxOutputBytes": 4096,
+    "maxConcurrent": 2,
+    "environment": { "ICAMIFY_LOG_LEVEL": "info" }
+  }
+}
+```
+
+With `enabled: true`, a script path must resolve (after symlinks) inside one of
+`directories`, otherwise the rule outcome reports why it was refused. The process
+is spawned without a shell — so `args` entries are argv values, never shell text —
+and `{placeholder}` tokens in `args` are substituted from the event. The event is
+also exported as `ICAMIFY_RULE_ID`, `ICAMIFY_RULE_NAME`, `ICAMIFY_CAMERA_ID`,
+`ICAMIFY_CAMERA_NAME`, `ICAMIFY_EVENT_KIND`, `ICAMIFY_EVENT_TIME`,
+`ICAMIFY_SEVERITY`, `ICAMIFY_TITLE`, `ICAMIFY_MESSAGE`, and, when present,
+`ICAMIFY_LABEL`, `ICAMIFY_CONFIDENCE`, `ICAMIFY_SNAPSHOT` and `ICAMIFY_EVENT_ID`.
+Runs are killed as a process group at `timeoutSeconds` (or the rule's override),
+output is capped at `maxOutputBytes`, and `maxConcurrent` bounds the fleet.
 
 ---
 

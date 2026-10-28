@@ -141,12 +141,24 @@ sweep** can never race the same files. A volume whose archive target cannot be
 built (missing credentials, password-only SFTP) keeps recording and reports the
 reason on `/api/storage` rather than failing startup.
 
+## Notifications and automation scripts
+
+`apps/server/src/alerts/` implements all four channels without third-party
+packages: `smtp.ts` (EHLO, STARTTLS or implicit TLS, AUTH PLAIN/LOGIN, MIME body
+with optional snapshot attachment), `mqtt.ts` (CONNECT/PUBLISH with QoS 0/1/2 and
+retained Home Assistant discovery), `telegram.ts` (escaped text, `sendPhoto` for
+snapshots) and `notifier.ts` (dedupe, per-channel outcomes, attachments).
+
+`apps/server/src/automation/script-runner.ts` executes `then.script` only when
+`scripts.enabled` is true. A path must resolve inside `scripts.directories`, the
+process is spawned without a shell, event fields arrive as `ICAMIFY_*` variables,
+and each run is bounded by a timeout (killed as a process group) and a concurrency
+cap.
+
 ## Not implemented yet
 
-The `then.script` rule action, email/MQTT/Telegram
-delivery (only webhooks are implemented), boot-time disk ↔ index reconciliation,
-the resizable layout editor and the HLS segmenter. SFTP archiving requires the
-OpenSSH client and key authentication.
+Boot-time disk ↔ index reconciliation, the resizable layout editor and the HLS
+segmenter. SFTP archiving requires the OpenSSH client and key authentication.
 `scheduled` recording evaluates windows in UTC. Custom `system.api.basePath` values
 and `corsOrigins` are not honoured yet — routes are always under `/api` and the
 console is same-origin.
