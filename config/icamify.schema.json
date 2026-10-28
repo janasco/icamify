@@ -1169,7 +1169,7 @@
         "name": { "type": "string", "minLength": 1, "maxLength": 120 },
         "enabled": { "type": "boolean", "default": true },
         "type": { "const": "mqtt" },
-        "url": { "type": "string", "pattern": "^(mqtt|mqtts|ws|wss)://[^\\s]+$" },
+        "url": { "type": "string", "pattern": "^(mqtt|mqtts)://[^\\s]+$", "description": "Broker URL. WebSocket transports are not supported; use mqtt:// or mqtts://." },
         "topic": { "type": "string", "minLength": 1 },
         "qos": { "type": "integer", "enum": [0, 1, 2], "default": 1 },
         "retain": { "type": "boolean", "default": false },
