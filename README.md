@@ -25,7 +25,8 @@ The WebRTC media plane is real: an FFmpeg RTP source per camera feeds one
 connect or no frame paints. A checked-in demo harness (`npm run demo`) reproduces
 the whole system — fake ONVIF camera, stub detector, looping H.264 clips — and
 `npm run demo:rtc` proves video arrives over WebRTC without a browser.
-The resizable layout editor and HLS remain.
+The console grid is editable: tiles can be dragged and resized into a saved layout,
+and the index is reconciled against the disk at every boot. HLS remains.
 
 | Phase | Scope | State |
 | ----- | ----- | ----- |
@@ -36,7 +37,7 @@ The resizable layout editor and HLS remain.
 | 4 | AI gateway (CodeProject.AI/DeepStack/generic/plugin), label+confidence gating, rules engine, webhook notifications, alert clips | ✅ done |
 | 4b | ONVIF WS-Discovery + PTZ control/patrols, PTZ rule action, script action + email/MQTT/Telegram delivery | ✅ done |
 | 5 | Retention enforcement (age/size/disk floor), archive to local/S3/SFTP, detection pruning, timeline player | ✅ done |
-| 6 | WebRTC media engine (`@icamify/rtc` + `werift`), demo harness, resizable layout editor, HLS | ✅ done (media engine; editor/HLS pending) |
+| 6 | WebRTC media engine (`@icamify/rtc` + `werift`), demo harness, resizable layout editor, boot-time index reconciliation, HLS | ✅ done (HLS pending) |
 
 ## Requirements
 
@@ -242,10 +243,16 @@ npm run config:schema      # print the JSON Schema
   timeline asks for a new window instead. Codecs MP4 cannot carry (for example
   some H.265 browser combinations) will fail to play — the file itself is intact
   and downloadable.
-- **The purge does not reconcile the index against the disk yet.** Tombstones keep
-  history, and the recorder re-adopts hot segments after a restart, but a full
-  boot-time rescan (`reconcile.ts`) is not written; deleting files behind iCamify's
-  back leaves rows that report 410 until they age out.
+- **The index is reconciled against the disk at boot** (`recording/reconcile.ts`,
+  also available as `POST /api/storage/reconcile`). A finished file with no row is
+  indexed, a tombstoned row whose file still exists is restored, and a row whose
+  file vanished is tombstoned. An unreadable camera directory (an unmounted
+  volume) is reported and left untouched, so a NAS that is briefly offline never
+  wipes the timeline.
+- **Layouts edited in the console are stored beside the index** (`<stateDir>/layouts.json`),
+  not in the configuration file: tile positions are presentation state, and the
+  config may be read-only. Once the file exists it wins over `layouts[]` in the
+  config; `stored: true` on `/api/layouts` says which one is in charge.
 - **Notification channels deliver in-process.** Webhooks (HMAC-signed), SMTP
   email (implicit TLS or STARTTLS, AUTH PLAIN/LOGIN), MQTT (QoS 0/1/2, optional
   Home Assistant discovery) and Telegram (`sendMessage`/`sendPhoto`) need no extra
@@ -276,8 +283,11 @@ npm run config:schema      # print the JSON Schema
   a viewer outside the LAN falls back to MSE. Session detail in `/api/webrtc` is
   admin-only because it names users.
 - **Live audio is not carried.** The live plan maps video only.
-- **Resizable tile spans** are not in the console yet; grid size, order and focus
-  persist locally. Configured layout tiles seed the initial order.
+- **The layout editor saves rectangles, not free-form pixels.** Tiles snap to a
+  grid of at most 8×8 cells, cannot overlap, and one camera appears once; the
+  editor keeps the saved layout and the flat reorderable grid as two views.
+- **HLS is not implemented.** Live view offers WebRTC, MSE over the control socket
+  and MJPEG; there is no `live.m3u8` playlist or segmenter.
 - **`system.api.basePath` and `corsOrigins`** are not honoured yet (routes are
   `/api`, console is same-origin); startup warns if a custom base path is set.
 - **Verification used a file source** (looping test pattern), a stub detector that

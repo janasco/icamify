@@ -15,9 +15,11 @@ import { HttpError, readJsonBody, sendBuffer, sendJson } from '../http/responses
 import type { RouteContext, Router } from '../http/router.ts';
 import { createMjpegHandler } from '../live/mjpeg.ts';
 import { OnvifError } from '@icamify/onvif';
+import { LayoutError, type LayoutService } from '../layouts/service.ts';
 import type { MotionService } from '../motion/service.ts';
 import type { OnvifService } from '../onvif/service.ts';
 import type { RecordingManager } from '../recording/manager.ts';
+import type { ReconcileResult } from '../recording/reconcile.ts';
 import type { CameraRuntime, CameraView } from '../runtime.ts';
 import type { StorageService } from '../storage/service.ts';
 import type { SignalingService } from '../webrtc/signaling.ts';
@@ -49,6 +51,8 @@ export interface ApiDeps {
   storage?: StorageService;
   onvif?: OnvifService;
   snapshotsDir?: string;
+  layouts?: LayoutService;
+  reconcile?: () => Promise<ReconcileResult>;
   log?: (line: string) => void;
 }
 
@@ -890,20 +894,113 @@ export function registerRoutes(router: Router, deps: ApiDeps): void {
 
   // -- layouts ---------------------------------------------------------------
 
+  const requireLayouts = (): LayoutService => {
+    if (deps.layouts === undefined) {
+      throw new HttpError(503, 'layouts-unavailable', 'Layout editing is not available on this server.');
+    }
+    return deps.layouts;
+  };
+
   router.get(
     '/api/layouts',
-    (context) => {
+    async (context) => {
       requireView(context);
-      const layouts = deps.config.layouts ?? [];
       const cameras: CameraView[] = deps.runtime.cameras();
+      const listed = await deps.layouts?.list();
+      const layouts = listed?.layouts ?? deps.config.layouts ?? [];
       sendJson(context.res, 200, {
         layouts,
-        defaultLayoutId: layouts.find((layout) => layout.isDefault)?.id ?? layouts[0]?.id,
+        defaultLayoutId: listed?.defaultLayoutId ?? layouts.find((layout) => layout.isDefault)?.id ?? layouts[0]?.id,
+        stored: listed?.stored ?? false,
+        limits: { grid: 8, tiles: 64 },
         cameras: cameras.map((camera) => ({ id: camera.id, name: camera.name, order: camera.ui.order ?? 1000 })),
       });
     },
     { auth: 'optional' },
   );
+
+  router.post(
+    '/api/layouts',
+    async (context) => {
+      const body = await readJsonBody(context.req, { maxBytes: 64 * 1024 });
+      try {
+        const layout = await requireLayouts().save(body.layout ?? body);
+        deps.log?.(`layout "${layout.id}" created by ${context.principal?.username ?? 'anonymous'}`);
+        sendJson(context.res, 201, { layout });
+      } catch (error) {
+        throw layoutHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.put(
+    '/api/layouts/:id',
+    async (context) => {
+      const id = context.params.id ?? '';
+      const body = await readJsonBody(context.req, { maxBytes: 64 * 1024 });
+      try {
+        const layout = await requireLayouts().save(body.layout ?? body, id);
+        deps.log?.(`layout "${layout.id}" updated by ${context.principal?.username ?? 'anonymous'}`);
+        sendJson(context.res, 200, { layout });
+      } catch (error) {
+        throw layoutHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.post(
+    '/api/layouts/:id/default',
+    async (context) => {
+      const id = context.params.id ?? '';
+      try {
+        const layout = await requireLayouts().setDefault(id);
+        deps.log?.(`layout "${layout.id}" is now the default`);
+        sendJson(context.res, 200, { layout });
+      } catch (error) {
+        throw layoutHttpError(error);
+      }
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  router.delete(
+    '/api/layouts/:id',
+    async (context) => {
+      const id = context.params.id ?? '';
+      const removed = await requireLayouts().remove(id);
+      if (!removed) throw new HttpError(404, 'layout-not-found', `Layout "${id}" does not exist.`);
+      deps.log?.(`layout "${id}" deleted by ${context.principal?.username ?? 'anonymous'}`);
+      sendJson(context.res, 200, { deleted: id });
+    },
+    { auth: 'required', role: 'operator' },
+  );
+
+  // -- index reconciliation --------------------------------------------------
+
+  // Exposed as well as run at boot: an operator who plugs a volume back in should
+  // not have to restart the NVR to make its clips appear.
+  router.post(
+    '/api/storage/reconcile',
+    async (context) => {
+      if (deps.reconcile === undefined) {
+        throw new HttpError(503, 'reconcile-unavailable', 'Index reconciliation is not enabled on this server.');
+      }
+      const result = await deps.reconcile();
+      deps.log?.(
+        `reconcile run by ${context.principal?.username ?? 'anonymous'}: ` +
+          `${result.indexed} indexed, ${result.restored} restored, ${result.missing} missing`,
+      );
+      sendJson(context.res, 200, result);
+    },
+    { auth: 'required', role: 'operator' },
+  );
+}
+
+function layoutHttpError(error: unknown): never {
+  if (error instanceof LayoutError) throw new HttpError(error.status, error.code, error.message);
+  throw error;
 }
 
 async function sendSegmentFile(context: RouteContext, segment: RecordingSegment): Promise<void> {

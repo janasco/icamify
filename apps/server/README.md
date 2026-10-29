@@ -109,8 +109,8 @@ Full reference: [docs/api.md](../../docs/api.md).
 | Rules | `GET /api/rules` (rules + which channels are implemented) |
 | Recordings | `GET /api/recordings`, `/api/recordings/:id`, `/api/recordings/:id/file` (Range), `/api/recordings/:id/play.mp4` (remux window), `/api/cameras/:id/recording`, `GET /api/events`, `GET /api/events/:id/snapshot` |
 | Timeline | `GET /api/timeline` (one day: segments + events) |
-| Storage | `GET /api/storage`, `POST /api/storage/sweep` (operator), `POST /api/recordings/:id/protect` (operator), `DELETE /api/recordings/:id` (operator) |
-| Dashboards | `GET /api/layouts` |
+| Storage | `GET /api/storage`, `POST /api/storage/sweep` (operator), `POST /api/storage/reconcile` (operator), `POST /api/recordings/:id/protect` (operator), `DELETE /api/recordings/:id` (operator) |
+| Dashboards | `GET /api/layouts`, `POST /api/layouts`, `PUT /api/layouts/:id`, `POST /api/layouts/:id/default`, `DELETE /api/layouts/:id` (mutations: operator) |
 | Control | `WS /ws` (status push, motion, recording, AI detections, rule alerts, storage sweeps/warnings, WebRTC signaling) |
 
 ## Operational rules
@@ -155,10 +155,25 @@ process is spawned without a shell, event fields arrive as `ICAMIFY_*` variables
 and each run is bounded by a timeout (killed as a process group) and a concurrency
 cap.
 
+## Layouts and index reconciliation
+
+`apps/server/src/layouts/service.ts` owns console layouts. Edits are validated
+(bounds, overlap, one tile per camera, at most 8×8 cells) and written atomically to
+`<stateDir>/layouts.json`; that file, once it exists, replaces `layouts[]` from the
+configuration, so a read-only config is never a problem. Deleting the file falls
+back to the configured layouts.
+
+`apps/server/src/recording/reconcile.ts` runs before any recorder starts and is
+also exposed as `POST /api/storage/reconcile`. It indexes finished files that have
+no row, restores tombstones whose file is still playable, refreshes size/end-time
+drift, and tombstones rows whose file is gone. A camera directory that cannot be
+read is reported and left alone — an unmounted volume must never look like a
+deleted library.
+
 ## Not implemented yet
 
-Boot-time disk ↔ index reconciliation, the resizable layout editor and the HLS
-segmenter. SFTP archiving requires the OpenSSH client and key authentication.
+The HLS segmenter (`live.m3u8`); live view currently offers WebRTC, MSE and MJPEG.
+SFTP archiving requires the OpenSSH client and key authentication.
 `scheduled` recording evaluates windows in UTC. Custom `system.api.basePath` values
 and `corsOrigins` are not honoured yet — routes are always under `/api` and the
 console is same-origin.

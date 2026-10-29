@@ -437,7 +437,7 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
 | **1a — Foundation** | Repo layout, workspace tooling, config schema + example, typed config loader, env/secret handling, referential checks, zone mask codec, CLI, tests, docs | ✅ complete |
 | **1b — Media bring-up** | `ffmpeg`/`ffprobe` detection and capability probe, argv builders, process supervisor, RTSP/RTMP/HTTP/USB/file ingest, FFprobe → `StreamProbe`, camera health/backoff, `icamify doctor` | ✅ complete |
 | **2 — Live console** | HTTP API + auth, control WebSocket, WebRTC signaling and session lifecycle, MSE/MJPEG live view, Vue grid console | ✅ complete |
-| **2b — WebRTC media** | WebRTC media engine (H.264 RTP ↔ ICE/DTLS via `werift`), browser player with visible fallback, demo harness | ✅ complete (resizable tile spans and the HLS segmenter are still pending) |
+| **2b — WebRTC media** | WebRTC media engine (H.264 RTP ↔ ICE/DTLS via `werift`), browser player with visible fallback, demo harness, resizable layout editor | ✅ complete (the HLS segmenter is still pending) |
 | **3 — Recording & motion** | Segmenter + hot-directory adoption, pre-buffer ring, motion engine + zone editor, recording index and clip playback, recording modes (continuous/motion/alert/scheduled) | ✅ complete (visual timeline lands in Phase 5) |
 | **4 — AI & alerts** | AI gateway + CodeProject/DeepStack/HTTP/plugin providers, crop-to-motion, label/confidence gating, rules engine, alert clips, webhook delivery (HMAC), console detection overlay and event log | ✅ complete |
 | **4b — ONVIF, PTZ, other channels** | ONVIF WS-Discovery, Profile S PTZ moves/presets/patrols, PTZ rule action, PTZ pad and discovery dialog in the console, SMTP/MQTT/Telegram delivery, opt-in script action | ✅ complete |
@@ -488,8 +488,9 @@ Targets for the reference config (4x 1080p H.264 + 1x 4K + 1 MJPEG, 8-core mini 
   Matroska clips, an age purge that archived one and deleted it, a byte-identical
   archive copy, detection pruning that removed the old event and its snapshot but
   kept the recent one, and `play.mp4` remuxed to a 2-second fragmented MP4 that
-  ffprobe reports as h264/mp4 — 41/41 checks. Boot-time disk reconciliation and a
-  real S3/SFTP server are still pending.)*
+  ffprobe reports as h264/mp4 — 41/41 checks. A real S3/SFTP server is still
+  pending. Boot-time reconciliation is covered by unit tests over real temporary
+  directories.)*
 
 ---
 

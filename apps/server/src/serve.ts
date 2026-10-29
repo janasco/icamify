@@ -15,12 +15,14 @@ import { ScriptRunner } from './automation/script-runner.ts';
 import { AuthService } from './http/auth.ts';
 import { Router } from './http/router.ts';
 import { createAppServer, type AppServer, type ListenResult, type RequestLogEntry } from './http/server.ts';
+import { LayoutService } from './layouts/service.ts';
 import { createLiveStreamHandler } from './live/ws-stream.ts';
 import { createLiveSourceFactory } from './media/live-source.ts';
 import { createRtpSourceFactory } from './media/rtp-source.ts';
 import { MotionService, type MotionServiceEvent } from './motion/service.ts';
 import { OnvifService } from './onvif/service.ts';
 import { RecordingManager, type RecordingHubEvent } from './recording/manager.ts';
+import { reconcileRecordings, type ReconcileResult } from './recording/reconcile.ts';
 import { registerRoutes } from './routes/index.ts';
 import { RuleEngine, type RuleEngineEvent, type RuleScriptRequest } from './rules/engine.ts';
 import { CameraRuntime } from './runtime.ts';
@@ -69,6 +71,8 @@ export interface RunningServer {
   rules: RuleEngine;
   storage: StorageService;
   onvif: OnvifService;
+  layouts: LayoutService;
+  reconcile: () => Promise<ReconcileResult>;
   config: ResolvedIcamifyConfig;
   toolchain: FfmpegToolchain;
   listen: ListenResult;
@@ -205,6 +209,22 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     log,
     onEvent: (event) => pushStorage?.(event),
   });
+
+  // Layouts edited in the console live beside the index, never in the config file.
+  const layouts = new LayoutService({ config, stateDir: storagePaths.stateDir, log });
+
+  /** Repairs the index against the disk; safe to call while the server is running. */
+  const reconcile = async (): Promise<ReconcileResult> => {
+    const result = await reconcileRecordings({ config, index: recording.index, log });
+    if (result.indexed > 0 || result.restored > 0 || result.missing > 0 || result.refreshed > 0) {
+      log(
+        `reconcile: ${result.indexed} segment(s) indexed, ${result.restored} restored, ` +
+          `${result.refreshed} refreshed, ${result.missing} missing` +
+          (result.errors > 0 ? `, ${result.errors} camera(s) skipped` : ''),
+      );
+    }
+    return result;
+  };
 
   const notifier = new Notifier({
     channels: config.notifications.channels ?? [],
@@ -384,6 +404,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     storage,
     onvif,
     gateway,
+    layouts,
+    reconcile,
     snapshotsDir: storagePaths.snapshotsDir,
     version: CORE_VERSION,
     startedAt: runtime.startedAt,
@@ -548,6 +570,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
 
   const listen = await server.listen(options.port, options.host);
 
+  // The index is repaired before any recorder writes to it: a crash midway through
+  // a segment would otherwise leave the timeline pointing at a file that is not
+  // there, or hide a clip that is.
+  await reconcile();
+
   // Cameras start after the listener exists: a slow RTSP handshake must not delay
   // `listen`, and a failing camera must not keep the API from coming up.
   await recording.start();
@@ -625,6 +652,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     rules,
     storage,
     onvif,
+    layouts,
+    reconcile,
     config,
     toolchain,
     listen,

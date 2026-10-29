@@ -137,6 +137,9 @@ export interface CameraList {
 export interface LayoutList {
   layouts: LayoutConfig[];
   defaultLayoutId?: string;
+  /** True when edits were stored server-side and override the configuration file. */
+  stored?: boolean;
+  limits?: { grid: number; tiles: number };
   cameras: Array<{ id: string; name: string; order: number }>;
 }
 

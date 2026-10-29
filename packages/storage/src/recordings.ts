@@ -101,6 +101,7 @@ const MAX_LIMIT = 500;
 
 interface SegmentRow {
   id: string;
+  deleted_at: number | null;
   camera_id: string;
   volume_id: string;
   path: string;
@@ -288,6 +289,18 @@ export class RecordingIndex {
   /** Tombstones a row; the caller deletes the file (retention, Phase 5). */
   markDeleted(id: string, at = Date.now()): void {
     this.db.prepare('UPDATE segments SET deleted_at = ? WHERE id = ?').run(at, id);
+  }
+
+  /**
+   * Clears a tombstone.
+   *
+   * Used only by the boot reconciler: a file that is still on disk while its row
+   * is tombstoned means an unlink failed, and the footage is still playable. The
+   * alternative — dropping the row — would orphan the file for retention.
+   */
+  restoreSegment(id: string): RecordingSegment | undefined {
+    this.db.prepare('UPDATE segments SET deleted_at = NULL WHERE id = ?').run(id);
+    return this.getSegment(id);
   }
 
   /** Records that a copy of the segment exists on an archive target. */
@@ -495,6 +508,7 @@ function mapSegment(row: SegmentRow, eventIds: string[]): RecordingSegment {
     hasAlert: fromInt(row.has_alert),
     eventIds,
     ...(row.protected === 1 ? { protected: true } : {}),
+    ...(row.deleted_at === null ? {} : { deletedAt: Number(row.deleted_at) }),
     ...(row.archived_at === null ? {} : { archivedAt: Number(row.archived_at) }),
     ...(row.archived_by === null ? {} : { archivedBy: row.archived_by }),
   };

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AiEditor from './AiEditor.vue';
 import CameraTile from './CameraTile.vue';
 import ClipsPanel from './ClipsPanel.vue';
+import LayoutEditor from './LayoutEditor.vue';
 import MotionEditor from './MotionEditor.vue';
 import OnvifDiscovery from './OnvifDiscovery.vue';
 import PtzPanel from './PtzPanel.vue';
@@ -18,7 +19,9 @@ import type {
   CameraList,
   CameraView,
   EventList,
+  LayoutConfig,
   LayoutList,
+  LayoutTile,
   MotionRuntime,
   MotionStatus,
   RecordedEvent,
@@ -64,6 +67,9 @@ const newAlerts = ref(0);
 const timelineOpen = ref(false);
 const storageOpen = ref(false);
 const storageWarning = ref<string | null>(null);
+const layoutEditorOpen = ref(false);
+const layoutMode = ref<boolean>(readString('icamify.layoutMode') === '1');
+const activeLayoutId = ref<string | null>(readString('icamify.layoutId'));
 
 const canConfigure = computed(() => props.me.user?.role !== 'viewer');
 
@@ -97,6 +103,45 @@ const defaultLayout = computed(() => {
 
 const columnsValue = computed(() => (columns.value > 0 ? columns.value : autoColumns(cameras.value.length)));
 
+/**
+ * The layout the grid draws when "Layout" is on, and what the editor edits.
+ * The stored layout wins; the flat reorderable grid is still the default view.
+ */
+const activeLayout = computed<LayoutConfig | null>(() => {
+  const list = layouts.value?.layouts ?? [];
+  const wanted = activeLayoutId.value === null ? undefined : list.find((layout) => layout.id === activeLayoutId.value);
+  return wanted ?? defaultLayout.value ?? null;
+});
+
+const layoutTiles = computed(() => {
+  const layout = activeLayout.value;
+  if (layout === null) return [];
+  const byId = new Map(cameras.value.map((camera) => [camera.id, camera]));
+  return (layout.tiles ?? [])
+    .map((tile) => ({ tile, camera: byId.get(tile.cameraId) }))
+    .filter((entry): entry is { tile: LayoutTile; camera: CameraView } => entry.camera !== undefined)
+    .filter((entry) => focusId.value === null || entry.tile.cameraId === focusId.value)
+    .sort((left, right) => left.tile.y - right.tile.y || left.tile.x - right.tile.x);
+});
+
+const layoutActive = computed(() => layoutMode.value && layoutTiles.value.length > 0);
+
+/** A layout to edit even on a fresh install, so the editor is never empty. */
+const editorLayout = computed<LayoutConfig>(() => {
+  const layout = activeLayout.value;
+  if (layout !== null) return layout;
+  const cols = columnsValue.value;
+  return {
+    id: 'default',
+    name: 'Default grid',
+    columns: cols,
+    rows: Math.max(1, Math.min(8, Math.ceil(Math.max(1, cameras.value.length) / cols))),
+    tiles: [],
+  };
+});
+
+const cameraChoices = computed(() => cameras.value.map((camera) => ({ id: camera.id, name: camera.name })));
+
 const ordered = computed(() => {
   const rank = new Map(order.value.map((id, index) => [id, index]));
   return [...cameras.value].sort((left, right) => {
@@ -125,6 +170,13 @@ async function load(): Promise<void> {
     ]);
     cameras.value = list.cameras;
     layouts.value = layoutList;
+    if (
+      activeLayoutId.value !== null &&
+      !(layoutList?.layouts ?? []).some((layout) => layout.id === activeLayoutId.value)
+    ) {
+      activeLayoutId.value = layoutList?.defaultLayoutId ?? null;
+      persist('icamify.layoutId', activeLayoutId.value ?? '');
+    }
     system.value = info;
     webrtcIceServers.value = rtc?.iceServers ?? [];
 
@@ -349,6 +401,29 @@ function setColumns(value: number): void {
   persist('icamify.columns', String(value));
 }
 
+function toggleLayoutMode(): void {
+  layoutMode.value = !layoutMode.value;
+  persist('icamify.layoutMode', layoutMode.value ? '1' : '0');
+}
+
+function onLayoutSaved(layout: LayoutConfig): void {
+  const existing = layouts.value?.layouts ?? [];
+  const next = existing.some((candidate) => candidate.id === layout.id)
+    ? existing.map((candidate) => (candidate.id === layout.id ? layout : candidate))
+    : [...existing, layout];
+  layouts.value = {
+    layouts: next,
+    ...(layouts.value?.defaultLayoutId === undefined ? {} : { defaultLayoutId: layouts.value.defaultLayoutId }),
+    stored: true,
+    ...(layouts.value?.limits === undefined ? {} : { limits: layouts.value.limits }),
+    cameras: layouts.value?.cameras ?? cameraChoices.value.map((camera) => ({ ...camera, order: 1000 })),
+  };
+  activeLayoutId.value = layout.id;
+  layoutMode.value = true;
+  persist('icamify.layoutId', layout.id);
+  persist('icamify.layoutMode', '1');
+}
+
 function setFocus(cameraId: string | null): void {
   focusId.value = focusId.value === cameraId ? null : cameraId;
   persist('icamify.focus', focusId.value ?? '');
@@ -563,6 +638,15 @@ function readString(key: string): string | null {
             {{ count }}
           </button>
         </div>
+        <button
+          v-if="layoutTiles.length > 0"
+          :class="{ active: layoutMode }"
+          title="Draw the saved layout instead of the flat grid"
+          @click="toggleLayoutMode"
+        >
+          Layout
+        </button>
+        <button v-if="canConfigure" @click="layoutEditorOpen = true">Edit layout</button>
         <span class="spacer"></span>
         <span v-if="system" class="pill mono">{{ system.transports.ladder.join(' → ') }}</span>
         <button :class="{ primary: clipsOpen }" @click="toggleClips">
@@ -592,6 +676,37 @@ function readString(key: string): string | null {
         <div v-else-if="cameras.length === 0 && !loading" class="empty">
           <strong>No cameras yet</strong>
           <span>Add a camera to <code>cameras[]</code> in the configuration, then restart iCamify.</span>
+        </div>
+
+        <div
+          v-else-if="layoutActive"
+          class="grid layout-grid"
+          :style="{
+            '--cols': String(activeLayout?.columns ?? 1),
+            '--rows': String(activeLayout?.rows ?? 1),
+          }"
+        >
+          <div
+            v-for="entry in layoutTiles"
+            :key="entry.tile.cameraId"
+            class="tile-shell"
+            :style="{
+              gridColumn: `${entry.tile.x + 1} / span ${entry.tile.width ?? 1}`,
+              gridRow: `${entry.tile.y + 1} / span ${entry.tile.height ?? 1}`,
+            }"
+          >
+            <CameraTile
+              :camera="entry.camera"
+              :motion="motionRuntime[entry.camera.id] ?? null"
+              :ai="aiRuntime[entry.camera.id] ?? null"
+              :can-configure="canConfigure"
+              :signaler="signaler"
+              :webrtc-ice-servers="webrtcIceServers"
+              @configure="editing = entry.camera"
+              @ai-configure="editingAi = entry.camera"
+              @ptz="editingPtz = entry.camera"
+            />
+          </div>
         </div>
 
         <div v-else class="grid" :style="{ '--cols': String(columnsValue) }">
@@ -659,5 +774,12 @@ function readString(key: string): string | null {
       @close="timelineOpen = false"
     />
     <StoragePanel v-if="storageOpen" :can-manage="canConfigure" @close="storageOpen = false" />
+    <LayoutEditor
+      v-if="layoutEditorOpen"
+      :layout="editorLayout"
+      :cameras="cameraChoices"
+      @close="layoutEditorOpen = false"
+      @saved="onLayoutSaved"
+    />
   </div>
 </template>

@@ -30,6 +30,8 @@ export interface RecordingSegment {
   eventIds: string[];
   /** Set when the user starred the clip; retention never deletes it. */
   protected?: boolean;
+  /** Set when the row is a tombstone (file deleted by retention, or missing). */
+  deletedAt?: number;
   /** When the segment was copied to an archive target. */
   archivedAt?: number;
   /** Archive provider that holds the copy. */

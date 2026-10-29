@@ -77,7 +77,11 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/cameras/:id/live-argv?transport=mse\|mjpeg` | operator | Exact FFmpeg argv, credentials redacted. |
 | GET | `/api/cameras/:id/live.mjpeg` | optional | Multipart MJPEG live stream. |
 | WS (upgrade) | `/api/cameras/:id/live.ws` | optional | Fragmented MP4 live stream. |
-| GET | `/api/layouts` | optional | Configured layouts plus camera ordering. |
+| GET | `/api/layouts` | optional | Layouts (stored edits or the configured ones), the default, `stored`, grid limits and camera ordering. |
+| POST | `/api/layouts` | operator | `{name, columns, rows, tiles[], isDefault?, autoFill?}`; validates bounds, overlap and camera ids. |
+| PUT | `/api/layouts/:id` | operator | Replaces one layout; the id comes from the URL, never the body. |
+| POST | `/api/layouts/:id/default` | operator | Makes this layout the one the console opens with. |
+| DELETE | `/api/layouts/:id` | operator | Removes a layout and promotes another as default (`404` when unknown). |
 | GET | `/api/cameras/:id/motion` | optional | Motion status incl. zone matrix, thresholds, live boxes. |
 | PUT | `/api/cameras/:id/motion` | operator | `{sensitivity?, zones?}`; persists a runtime override. |
 | GET | `/api/cameras/:id/recording` | optional | Recorder status, storage stats and the 10 newest clips. |
@@ -90,6 +94,7 @@ when `auth.allowAnonymousViewing` is on, `required` always needs a principal.
 | GET | `/api/timeline?cameraId=&from=&to=` | optional | Segments and events for one day, ordered for drawing. |
 | GET | `/api/storage` | optional | Volume usage, quotas, archive targets and the last sweep. |
 | POST | `/api/storage/sweep` | operator | `{volumeId?, dryRun?}`; runs retention now. |
+| POST | `/api/storage/reconcile` | operator | Reconciles the index with the disk now: returns per-camera indexed/restored/refreshed/missing counts. |
 | GET | `/api/events` | optional | Motion/AI/rule events from the index. |
 | GET | `/api/events/:id/snapshot` | optional | Saved detection JPEG for an event (`404` when the event has none). |
 | GET | `/api/cameras/:id/ai` | optional | AI status: provider, task, labels, counters, last crop/error. |
